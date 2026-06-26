@@ -1,13 +1,12 @@
 package com.lit.fire.flame;
 
-/**
- * Hello world!
- *
- */
-public class App 
-{
-    public static void main( String[] args )
-    {
-        System.out.println( "Hello World!" );
+public class App {
+
+    public static void main(String[] args) {
+        if (args.length < 1) {
+            System.err.println("Usage: java -jar AuraDataFiller.jar <path-to-csv-file>");
+            System.exit(1);
+        }
+        new CsvDataFiller().process(args[0]);
     }
 }
