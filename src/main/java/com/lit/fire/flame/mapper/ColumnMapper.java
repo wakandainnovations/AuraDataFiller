@@ -2,34 +2,83 @@ package com.lit.fire.flame.mapper;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 public class ColumnMapper {
 
-    public static final String MOVIE_NAME_COL = "movie_name";
-    public static final String YEAR_COL = "year";
+    public static final String MOVIE_NAME_COL   = "movie_name";
+    public static final String RELEASE_DATE_COL = "release_date";
+    public static final String RELEASE_DAY_COL  = "release_day";
 
-    private static final Set<String> MOVIE_NAME_ALIASES = Set.of("movie name", "movie", "film");
+    private static final Set<String> MOVIE_NAME_ALIASES = Set.of(
+        "movie name", "movie", "film", "title"
+    );
+
+    private static final Set<String> SKIP_CSV_HEADERS = Set.of("overview");
+
     private static final Set<String> NUMERIC_PG_TYPES = Set.of(
         "numeric", "integer", "bigint", "smallint", "real",
         "double precision", "decimal", "float"
     );
 
+    private static final Map<String, String> LANGUAGE_CODES = Map.ofEntries(
+        Map.entry("hi", "Hindi"),
+        Map.entry("kn", "Kannada"),
+        Map.entry("ml", "Malayalam"),
+        Map.entry("te", "Telugu"),
+        Map.entry("ta", "Tamil"),
+        Map.entry("en", "English"),
+        Map.entry("mr", "Marathi"),
+        Map.entry("bn", "Bengali"),
+        Map.entry("pa", "Punjabi"),
+        Map.entry("gu", "Gujarati"),
+        Map.entry("or", "Odia"),
+        Map.entry("ur", "Urdu"),
+        Map.entry("sa", "Sanskrit"),
+        Map.entry("si", "Sinhala"),
+        Map.entry("ne", "Nepali"),
+        Map.entry("fr", "French"),
+        Map.entry("de", "German"),
+        Map.entry("es", "Spanish"),
+        Map.entry("ja", "Japanese"),
+        Map.entry("zh", "Chinese"),
+        Map.entry("ko", "Korean"),
+        Map.entry("ar", "Arabic"),
+        Map.entry("pt", "Portuguese"),
+        Map.entry("it", "Italian"),
+        Map.entry("ru", "Russian")
+    );
+
     /**
      * Maps a CSV header to a PostgreSQL column name.
-     * Normalises "Movie Name", "Movie", "Film" → movie_name.
-     * All others: lowercase + replace non-alphanumeric runs with '_', strip edge underscores.
+     * Handles well-known aliases and renames; everything else is lowercased
+     * with non-alphanumeric runs replaced by '_'.
      */
     public String toDbColumnName(String csvHeader) {
         String lower = csvHeader.toLowerCase().trim();
         if (MOVIE_NAME_ALIASES.contains(lower)) return MOVIE_NAME_COL;
-        if ("year".equals(lower))               return YEAR_COL;
+        if ("year".equals(lower) || "release_date".equals(lower)) return RELEASE_DATE_COL;
+        if ("vote_average".equals(lower))    return "rating_10";
+        if ("vote_count".equals(lower))      return "votes";
+        if ("original_language".equals(lower)) return "language";
         return lower.replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
     }
 
     public boolean isPkColumn(String dbColumnName) {
-        return MOVIE_NAME_COL.equals(dbColumnName) || YEAR_COL.equals(dbColumnName);
+        return MOVIE_NAME_COL.equals(dbColumnName) || RELEASE_DATE_COL.equals(dbColumnName);
+    }
+
+    public boolean shouldSkipCsvHeader(String csvHeader) {
+        return SKIP_CSV_HEADERS.contains(csvHeader.toLowerCase().trim());
+    }
+
+    /** Expands a 2-character language code to its full name; returns the original value if unknown. */
+    public String expandLanguageCode(String code) {
+        if (code == null) return null;
+        String lower = code.trim().toLowerCase();
+        return LANGUAGE_CODES.getOrDefault(lower, code.trim());
     }
 
     /**

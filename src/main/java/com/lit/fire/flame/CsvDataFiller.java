@@ -7,6 +7,9 @@ import com.lit.fire.flame.mapper.ColumnMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.time.format.TextStyle;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -41,9 +44,15 @@ public class CsvDataFiller {
 
         ColumnMapper mapper = new ColumnMapper();
 
+        // Transform rows: format release_date, derive release_day, expand language codes
+        csvData = transformRows(csvData, mapper);
+
+        // Build csvToDb, skipping columns that should be ignored (e.g. 'overview')
         Map<String, String> csvToDb = new LinkedHashMap<>();
         for (String header : csvData.headers()) {
-            csvToDb.put(header, mapper.toDbColumnName(header));
+            if (!mapper.shouldSkipCsvHeader(header)) {
+                csvToDb.put(header, mapper.toDbColumnName(header));
+            }
         }
 
         System.out.println("Column mapping:");
@@ -83,16 +92,15 @@ public class CsvDataFiller {
                 autoMergeThreshold, warnThreshold);
             db.ensureFuzzyIndex();
 
-            // Reverse lookup to find which CSV headers carry movie_name and year
             String movieNameHeader = csvToDb.entrySet().stream()
                 .filter(e -> ColumnMapper.MOVIE_NAME_COL.equals(e.getValue()))
                 .map(Map.Entry::getKey).findFirst().orElse(null);
-            String yearHeader = csvToDb.entrySet().stream()
-                .filter(e -> ColumnMapper.YEAR_COL.equals(e.getValue()))
+            String releaseDateHeader = csvToDb.entrySet().stream()
+                .filter(e -> ColumnMapper.RELEASE_DATE_COL.equals(e.getValue()))
                 .map(Map.Entry::getKey).findFirst().orElse(null);
 
-            List<String[]> pairs = extractUniqueNameYearPairs(csvData, movieNameHeader, yearHeader, mapper);
-            System.out.printf("Checking %,d unique (movie, year) pairs against existing data...%n",
+            List<String[]> pairs = extractUniqueNameDatePairs(csvData, movieNameHeader, releaseDateHeader, mapper);
+            System.out.printf("Checking %,d unique (movie, release_date) pairs against existing data...%n",
                 pairs.size());
 
             List<String> warnings = new ArrayList<>();
@@ -120,22 +128,60 @@ public class CsvDataFiller {
     }
 
     /**
-     * Collects unique (movie_name, year) pairs from the CSV that have valid, non-null values
-     * for both PK fields. Used to drive the fuzzy duplicate pre-check.
+     * Applies pre-DB transformations to CSV rows:
+     *   - release_date: converts YYYY-MM-DD → YYYYMMDD and derives the day name into release_day
+     *   - original_language: expands 2-char ISO code to full language name
      */
-    private List<String[]> extractUniqueNameYearPairs(CsvData csvData,
+    private CsvData transformRows(CsvData csvData, ColumnMapper mapper) {
+        boolean hasReleaseDate      = csvData.headers().contains("release_date");
+        boolean hasOriginalLanguage = csvData.headers().contains("original_language");
+
+        List<String> headers = new ArrayList<>(csvData.headers());
+        if (hasReleaseDate && !headers.contains(ColumnMapper.RELEASE_DAY_COL)) {
+            headers.add(ColumnMapper.RELEASE_DAY_COL);
+        }
+
+        for (Map<String, String> row : csvData.rows()) {
+            if (hasReleaseDate) {
+                String originalDate = row.get("release_date");
+                if (originalDate != null && !originalDate.isBlank()) {
+                    String trimmed = originalDate.trim();
+                    row.put("release_date", trimmed);
+                    try {
+                        LocalDate date = LocalDate.parse(trimmed);
+                        row.put(ColumnMapper.RELEASE_DAY_COL,
+                            date.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.ENGLISH));
+                    } catch (DateTimeParseException ex) {
+                        row.put(ColumnMapper.RELEASE_DAY_COL, null);
+                    }
+                }
+            }
+            if (hasOriginalLanguage) {
+                String langCode = row.get("original_language");
+                row.put("original_language", mapper.expandLanguageCode(langCode));
+            }
+        }
+
+        return new CsvData(List.copyOf(headers), csvData.rows());
+    }
+
+    /**
+     * Collects unique (movie_name, release_date) pairs from the CSV that have valid, non-null
+     * values for both PK fields. Used to drive the fuzzy duplicate pre-check.
+     */
+    private List<String[]> extractUniqueNameDatePairs(CsvData csvData,
                                                        String movieNameHeader,
-                                                       String yearHeader,
+                                                       String releaseDateHeader,
                                                        ColumnMapper mapper) {
-        if (movieNameHeader == null || yearHeader == null) return List.of();
+        if (movieNameHeader == null || releaseDateHeader == null) return List.of();
         Set<String> seen = new LinkedHashSet<>();
         List<String[]> pairs = new ArrayList<>();
         for (Map<String, String> row : csvData.rows()) {
             String name = mapper.sanitizeValue(row.get(movieNameHeader), "text");
-            String year = mapper.sanitizeValue(row.get(yearHeader), "text");
-            if (name == null || year == null) continue;
-            if (seen.add(name.toLowerCase() + "|" + year)) {
-                pairs.add(new String[]{name, year});
+            String date = mapper.sanitizeValue(row.get(releaseDateHeader), "text");
+            if (name == null || date == null) continue;
+            if (seen.add(name.toLowerCase() + "|" + date)) {
+                pairs.add(new String[]{name, date});
             }
         }
         return pairs;

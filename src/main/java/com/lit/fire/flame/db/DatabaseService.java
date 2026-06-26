@@ -25,14 +25,42 @@ public class DatabaseService implements AutoCloseable {
     }
 
     /**
+     * Renames the legacy 'year' PK column to 'release_date' if it still exists.
+     * Safe to call on a brand-new table (no rows in information_schema → no-op).
+     */
+    public void migrateLegacyYearColumn() throws SQLException {
+        String checkSql =
+            "SELECT 1 FROM information_schema.columns " +
+            "WHERE table_schema = 'public' AND table_name = ? AND column_name = 'year'";
+        boolean yearExists;
+        try (PreparedStatement ps = connection.prepareStatement(checkSql)) {
+            ps.setString(1, tableName);
+            try (ResultSet rs = ps.executeQuery()) {
+                yearExists = rs.next();
+            }
+        }
+        if (yearExists) {
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute("ALTER TABLE " + q(tableName) +
+                    " RENAME COLUMN \"year\" TO \"release_date\"");
+            }
+            connection.commit();
+            System.out.println("  Migrated column 'year' → 'release_date'");
+        }
+    }
+
+    /**
      * Creates the movies table if it does not already exist.
+     * Migrates the legacy 'year' column to 'release_date' first when needed.
      * The schema starts with just the two PK columns; everything else is added dynamically.
      */
     public void ensureTableExists() throws SQLException {
+        migrateLegacyYearColumn();
+
         String sql = "CREATE TABLE IF NOT EXISTS " + q(tableName) + " (" +
-            "\"movie_name\" TEXT NOT NULL, " +
-            "\"year\"       TEXT NOT NULL, " +
-            "PRIMARY KEY (\"movie_name\", \"year\")" +
+            "\"movie_name\"   TEXT NOT NULL, " +
+            "\"release_date\" TEXT NOT NULL, " +
+            "PRIMARY KEY (\"movie_name\", \"release_date\")" +
             ")";
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(sql);
@@ -92,7 +120,7 @@ public class DatabaseService implements AutoCloseable {
     }
 
     /**
-     * Checks all incoming (movie_name, year) pairs against the existing table for fuzzy duplicates.
+     * Checks all incoming (movie_name, release_date) pairs against the existing table for fuzzy duplicates.
      *
      * Two match tiers are applied:
      *   1. Case-insensitive exact match → always auto-merged (different capitalisation, same title).
@@ -101,31 +129,32 @@ public class DatabaseService implements AutoCloseable {
      *        • sim ≥ autoMergeThreshold → auto-merge, printed to stdout
      *        • sim ≥ warnThreshold      → added to warnOutput for human review
      *
-     * @param nameYearPairs      unique [movie_name, year] pairs from the incoming CSV
+     * @param nameDatePairs      unique [movie_name, release_date] pairs from the incoming CSV
      * @param warnThreshold      minimum similarity to flag as potential duplicate
      * @param autoMergeThreshold minimum similarity to automatically redirect to canonical name
      * @param warnOutput         list populated with human-readable warning strings
-     * @return map of "lower(movie_name)|year" → canonical movie_name in DB
+     * @return map of "lower(movie_name)|release_date" → canonical movie_name in DB
      */
     public Map<String, String> findFuzzyMatches(
-        List<String[]> nameYearPairs,
+        List<String[]> nameDatePairs,
         double warnThreshold,
         double autoMergeThreshold,
         List<String> warnOutput
     ) throws SQLException {
         Map<String, String> autoMergeMap = new LinkedHashMap<>();
-        if (nameYearPairs.isEmpty()) return autoMergeMap;
+        if (nameDatePairs.isEmpty()) return autoMergeMap;
 
         // Populate session-scoped temp table with incoming pairs
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
-                "CREATE TEMP TABLE IF NOT EXISTS _tmp_incoming_movies (movie_name TEXT, year TEXT)");
+                "CREATE TEMP TABLE IF NOT EXISTS _tmp_incoming_movies " +
+                "(movie_name TEXT, release_date TEXT)");
             stmt.execute("TRUNCATE _tmp_incoming_movies");
         }
         try (PreparedStatement ps =
                  connection.prepareStatement("INSERT INTO _tmp_incoming_movies VALUES (?, ?)")) {
             int count = 0;
-            for (String[] pair : nameYearPairs) {
+            for (String[] pair : nameDatePairs) {
                 ps.setString(1, pair[0]);
                 ps.setString(2, pair[1]);
                 ps.addBatch();
@@ -135,20 +164,20 @@ public class DatabaseService implements AutoCloseable {
         }
 
         // Tier 1: case-insensitive exact matches (different formatting, same title)
-        String q1 = "SELECT i.movie_name AS incoming, i.year, e.movie_name AS canonical " +
+        String q1 = "SELECT i.movie_name AS incoming, i.release_date, e.movie_name AS canonical " +
             "FROM _tmp_incoming_movies i " +
-            "JOIN " + q(tableName) + " e ON i.year = e.year " +
+            "JOIN " + q(tableName) + " e ON i.release_date = e.release_date " +
             "WHERE lower(trim(i.movie_name)) = lower(trim(e.movie_name)) " +
             "  AND trim(i.movie_name) != trim(e.movie_name)";
         try (Statement stmt = connection.createStatement();
              ResultSet rs = stmt.executeQuery(q1)) {
             while (rs.next()) {
-                String incoming  = rs.getString("incoming");
-                String year      = rs.getString("year");
-                String canonical = rs.getString("canonical");
-                autoMergeMap.put(mergeKey(incoming, year), canonical);
+                String incoming     = rs.getString("incoming");
+                String releaseDate  = rs.getString("release_date");
+                String canonical    = rs.getString("canonical");
+                autoMergeMap.put(mergeKey(incoming, releaseDate), canonical);
                 System.out.printf("  [AUTO-MERGE case  ] %-45s (%s)  →  %s%n",
-                    "'" + incoming + "'", year, "'" + canonical + "'");
+                    "'" + incoming + "'", releaseDate, "'" + canonical + "'");
             }
         }
 
@@ -156,34 +185,34 @@ public class DatabaseService implements AutoCloseable {
         //   Length-ratio filter: LEAST/GREATEST >= 0.70 drops "Ram" vs "Ram Ram" (ratio 0.43)
         //   but keeps "Panakkaran" vs "Pannakkaran" (ratio 0.96).
         String q2 =
-            "SELECT DISTINCT ON (i.movie_name, i.year) " +
-            "  i.movie_name AS incoming, i.year, e.movie_name AS canonical, " +
+            "SELECT DISTINCT ON (i.movie_name, i.release_date) " +
+            "  i.movie_name AS incoming, i.release_date, e.movie_name AS canonical, " +
             "  ROUND(similarity(i.movie_name, e.movie_name)::numeric, 3) AS sim " +
             "FROM _tmp_incoming_movies i " +
-            "JOIN " + q(tableName) + " e ON i.year = e.year " +
+            "JOIN " + q(tableName) + " e ON i.release_date = e.release_date " +
             "WHERE similarity(i.movie_name, e.movie_name) >= ? " +
             "  AND lower(trim(i.movie_name)) != lower(trim(e.movie_name)) " +
             "  AND LEAST(length(trim(i.movie_name)), length(trim(e.movie_name)))::float " +
             "    / GREATEST(length(trim(i.movie_name)), length(trim(e.movie_name)), 1) >= 0.70 " +
-            "ORDER BY i.movie_name, i.year, similarity(i.movie_name, e.movie_name) DESC";
+            "ORDER BY i.movie_name, i.release_date, similarity(i.movie_name, e.movie_name) DESC";
 
         try (PreparedStatement ps = connection.prepareStatement(q2)) {
             ps.setDouble(1, warnThreshold);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    String incoming  = rs.getString("incoming");
-                    String year      = rs.getString("year");
-                    String canonical = rs.getString("canonical");
-                    double sim       = rs.getDouble("sim");
+                    String incoming    = rs.getString("incoming");
+                    String releaseDate = rs.getString("release_date");
+                    String canonical   = rs.getString("canonical");
+                    double sim         = rs.getDouble("sim");
 
                     if (sim >= autoMergeThreshold) {
-                        autoMergeMap.put(mergeKey(incoming, year), canonical);
+                        autoMergeMap.put(mergeKey(incoming, releaseDate), canonical);
                         System.out.printf("  [AUTO-MERGE fuzzy %.3f] %-45s (%s)  →  %s%n",
-                            sim, "'" + incoming + "'", year, "'" + canonical + "'");
+                            sim, "'" + incoming + "'", releaseDate, "'" + canonical + "'");
                     } else {
                         warnOutput.add(String.format(
                             "  [WARN  %.3f] '%-45s (%s)  ≈  '%s'",
-                            sim, incoming + "'", year, canonical));
+                            sim, incoming + "'", releaseDate, canonical));
                     }
                 }
             }
@@ -200,7 +229,7 @@ public class DatabaseService implements AutoCloseable {
      * @param csvData       parsed CSV content
      * @param csvToDb       map of CSV header → DB column name
      * @param dbColumnTypes map of DB column name → PostgreSQL data type (from information_schema)
-     * @param autoMergeMap  map of "lower(movie_name)|year" → canonical movie_name (may be empty)
+     * @param autoMergeMap  map of "lower(movie_name)|release_date" → canonical movie_name (may be empty)
      */
     public void batchUpsert(CsvData csvData,
                             Map<String, String> csvToDb,
@@ -216,7 +245,7 @@ public class DatabaseService implements AutoCloseable {
 
         List<String> allCols = new ArrayList<>();
         allCols.add(ColumnMapper.MOVIE_NAME_COL);
-        allCols.add(ColumnMapper.YEAR_COL);
+        allCols.add(ColumnMapper.RELEASE_DATE_COL);
         allCols.addAll(dataCols);
 
         String colList      = allCols.stream().map(this::q).collect(Collectors.joining(", "));
@@ -226,14 +255,14 @@ public class DatabaseService implements AutoCloseable {
         if (dataCols.isEmpty()) {
             upsertSql = "INSERT INTO " + q(tableName) +
                 " (" + colList + ") VALUES (" + placeholders + ")" +
-                " ON CONFLICT (\"movie_name\", \"year\") DO NOTHING";
+                " ON CONFLICT (\"movie_name\", \"release_date\") DO NOTHING";
         } else {
             String updateClause = dataCols.stream()
                 .map(col -> q(col) + " = EXCLUDED." + q(col))
                 .collect(Collectors.joining(", "));
             upsertSql = "INSERT INTO " + q(tableName) +
                 " (" + colList + ") VALUES (" + placeholders + ")" +
-                " ON CONFLICT (\"movie_name\", \"year\") DO UPDATE SET " + updateClause;
+                " ON CONFLICT (\"movie_name\", \"release_date\") DO UPDATE SET " + updateClause;
         }
 
         Map<String, String> dbToCsv = new LinkedHashMap<>();
@@ -247,23 +276,23 @@ public class DatabaseService implements AutoCloseable {
             int batchCount = 0;
 
             for (Map<String, String> row : csvData.rows()) {
-                String movieName = extractValue(row, dbToCsv, ColumnMapper.MOVIE_NAME_COL, "text");
-                String year      = extractValue(row, dbToCsv, ColumnMapper.YEAR_COL, "text");
+                String movieName  = extractValue(row, dbToCsv, ColumnMapper.MOVIE_NAME_COL, "text");
+                String releaseDate = extractValue(row, dbToCsv, ColumnMapper.RELEASE_DATE_COL, "text");
 
-                if (movieName == null || year == null) {
+                if (movieName == null || releaseDate == null) {
                     skipped++;
                     continue;
                 }
 
                 // Apply fuzzy name normalisation before the conflict check
-                String normalised = autoMergeMap.get(mergeKey(movieName, year));
+                String normalised = autoMergeMap.get(mergeKey(movieName, releaseDate));
                 if (normalised != null) {
                     movieName = normalised;
                     merged++;
                 }
 
                 ps.setString(1, movieName);
-                ps.setString(2, year);
+                ps.setString(2, releaseDate);
 
                 for (int i = 0; i < dataCols.size(); i++) {
                     String dbCol     = dataCols.get(i);
@@ -309,9 +338,9 @@ public class DatabaseService implements AutoCloseable {
 
     // ---- private helpers ----
 
-    /** Lookup key for the autoMergeMap: normalised name + year. */
-    private static String mergeKey(String movieName, String year) {
-        return movieName.toLowerCase().trim() + "|" + year.trim();
+    /** Lookup key for the autoMergeMap: normalised name + release_date. */
+    private static String mergeKey(String movieName, String releaseDate) {
+        return movieName.toLowerCase().trim() + "|" + releaseDate.trim();
     }
 
     private String extractValue(Map<String, String> row, Map<String, String> dbToCsv,
