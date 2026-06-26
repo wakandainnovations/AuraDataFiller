@@ -3,6 +3,8 @@ package com.lit.fire.flame;
 import com.lit.fire.flame.csv.CsvData;
 import com.lit.fire.flame.csv.CsvParser;
 import com.lit.fire.flame.db.DatabaseService;
+import com.lit.fire.flame.enrichment.EnrichmentResult;
+import com.lit.fire.flame.enrichment.EnrichmentService;
 import com.lit.fire.flame.mapper.ColumnMapper;
 
 import java.io.IOException;
@@ -47,6 +49,16 @@ public class CsvDataFiller {
         // Transform rows: format release_date, derive release_day, expand language codes
         csvData = transformRows(csvData, mapper);
 
+        // Optional: enrich rows with GDP, inflation, box office, and event data
+        boolean enrichmentEnabled = Boolean.parseBoolean(
+            appConfig.getProperty("enrichment.enabled", "false"));
+        if (enrichmentEnabled) {
+            System.out.println("Enriching rows with external data...");
+            EnrichmentService enrichmentService = createEnrichmentService(secrets, appConfig);
+            csvData = enrichRows(csvData, mapper, enrichmentService);
+            System.out.println();
+        }
+
         // Build csvToDb, skipping columns that should be ignored (e.g. 'overview')
         Map<String, String> csvToDb = new LinkedHashMap<>();
         for (String header : csvData.headers()) {
@@ -81,7 +93,8 @@ public class CsvDataFiller {
                 List<String> colValues = csvData.rows().stream()
                     .map(row -> row.get(csvHeader))
                     .collect(Collectors.toList());
-                ColumnMapper.ColumnType type = mapper.inferType(colValues);
+                ColumnMapper.ColumnType type = mapper.getKnownColumnType(dbCol)
+                    .orElseGet(() -> mapper.inferType(colValues));
                 db.addColumn(dbCol, type);
                 existingCols.put(dbCol, type == ColumnMapper.ColumnType.NUMERIC ? "numeric" : "text");
             }
@@ -163,6 +176,78 @@ public class CsvDataFiller {
         }
 
         return new CsvData(List.copyOf(headers), csvData.rows());
+    }
+
+    /**
+     * Adds enrichment columns (GDP, inflation, box office, event info) to every row.
+     * The enrichment columns are appended to the header list and populated in each row map.
+     * Columns that already exist in the headers are skipped to avoid duplicates.
+     */
+    private CsvData enrichRows(CsvData csvData, ColumnMapper mapper, EnrichmentService enrichmentService) {
+        // Locate the CSV headers for the fields we need
+        String releaseDateHeader = null, languageHeader = null, countryHeader = null;
+
+        for (String h : csvData.headers()) {
+            String dbCol = mapper.toDbColumnName(h);
+            if (ColumnMapper.RELEASE_DATE_COL.equals(dbCol) && releaseDateHeader == null) releaseDateHeader = h;
+            if ("language".equals(dbCol)                    && languageHeader == null)    languageHeader   = h;
+            // Accept "country", "production_countries", or "country_of_origin"
+            if ((h.toLowerCase().contains("country") || h.equalsIgnoreCase("production_countries"))
+                    && countryHeader == null) {
+                countryHeader = h;
+            }
+        }
+
+        // Append enrichment headers that are not already present
+        List<String> headers = new ArrayList<>(csvData.headers());
+        List<String> enrichCols = List.of(
+            ColumnMapper.GDP_COL,      ColumnMapper.INFLATION_COL,
+            ColumnMapper.EVENT_TYPE_COL, ColumnMapper.EVENT_NAME_COL,
+            ColumnMapper.EVENT_DETAIL_COL
+        );
+        for (String col : enrichCols) {
+            if (!headers.contains(col)) headers.add(col);
+        }
+
+        long total = csvData.rows().size();
+        long count = 0;
+        for (Map<String, String> row : csvData.rows()) {
+            String releaseDate = releaseDateHeader != null ? row.get(releaseDateHeader) : null;
+            String language    = languageHeader    != null ? row.get(languageHeader)    : null;
+            String country     = countryHeader     != null ? row.get(countryHeader)     : null;
+
+            EnrichmentResult r = enrichmentService.enrich(releaseDate, language, country);
+
+            row.put(ColumnMapper.GDP_COL,       r.gdpBillionsUsd()   != null ? r.gdpBillionsUsd().toString()   : null);
+            row.put(ColumnMapper.INFLATION_COL, r.inflationRatePct() != null ? r.inflationRatePct().toString() : null);
+            row.put(ColumnMapper.EVENT_TYPE_COL,   r.releaseEventType());
+            row.put(ColumnMapper.EVENT_NAME_COL,   r.releaseEventName());
+            row.put(ColumnMapper.EVENT_DETAIL_COL, r.releaseEventDetail());
+
+            count++;
+            if (count % 50 == 0 || count == total) {
+                System.out.printf("  Enriched %,d / %,d rows...%n", count, total);
+            }
+        }
+
+        return new CsvData(List.copyOf(headers), csvData.rows());
+    }
+
+    private EnrichmentService createEnrichmentService(Properties secrets, Properties appConfig) {
+        boolean worldBankEnabled = Boolean.parseBoolean(
+            appConfig.getProperty("enrichment.worldbank.enabled", "true"));
+        boolean claudeEnabled = Boolean.parseBoolean(
+            appConfig.getProperty("enrichment.claude.enabled", "true"));
+        long delayMs = Long.parseLong(
+            appConfig.getProperty("enrichment.api.delay.ms", "300"));
+
+        String claudeApiKey = secrets.getProperty("anthropic.api.key", "").trim();
+
+        return new EnrichmentService(
+            worldBankEnabled, claudeEnabled,
+            claudeApiKey.isEmpty() ? null : claudeApiKey,
+            delayMs
+        );
     }
 
     /**

@@ -5,12 +5,27 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.HashMap;
 
 public class ColumnMapper {
 
     public static final String MOVIE_NAME_COL   = "movie_name";
     public static final String RELEASE_DATE_COL = "release_date";
     public static final String RELEASE_DAY_COL  = "release_day";
+
+    // Enrichment columns added by EnrichmentService
+    public static final String GDP_COL          = "gdp_usd_billions";
+    public static final String INFLATION_COL    = "inflation_rate_pct";
+    public static final String EVENT_TYPE_COL   = "release_event_type";
+    public static final String EVENT_NAME_COL   = "release_event_name";
+    public static final String EVENT_DETAIL_COL = "release_event_detail";
+
+    // Pre-declared types for enrichment columns (prevents TEXT inference when all values are null)
+    private static final Map<String, ColumnType> KNOWN_COLUMN_TYPES = new HashMap<>();
+    static {
+        KNOWN_COLUMN_TYPES.put(GDP_COL,       ColumnType.NUMERIC);
+        KNOWN_COLUMN_TYPES.put(INFLATION_COL, ColumnType.NUMERIC);
+    }
 
     private static final Set<String> MOVIE_NAME_ALIASES = Set.of(
         "movie name", "movie", "film", "title"
@@ -64,6 +79,11 @@ public class ColumnMapper {
         if ("vote_count".equals(lower))      return "votes";
         if ("original_language".equals(lower)) return "language";
         return lower.replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
+    }
+
+    /** Returns a pre-declared ColumnType for known enrichment columns, bypassing type inference. */
+    public Optional<ColumnType> getKnownColumnType(String dbColumnName) {
+        return Optional.ofNullable(KNOWN_COLUMN_TYPES.get(dbColumnName));
     }
 
     public boolean isPkColumn(String dbColumnName) {
