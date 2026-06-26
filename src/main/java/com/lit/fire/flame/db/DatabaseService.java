@@ -78,17 +78,135 @@ public class DatabaseService implements AutoCloseable {
     }
 
     /**
+     * Creates a GiST trigram index on movie_name for fast similarity searches.
+     * Requires pg_trgm extension (enabled separately).
+     */
+    public void ensureFuzzyIndex() throws SQLException {
+        String idxName = "idx_" + tableName.replaceAll("[^a-z0-9]", "_") + "_trgm";
+        String sql = "CREATE INDEX IF NOT EXISTS " + idxName +
+            " ON " + q(tableName) + " USING GiST (movie_name gist_trgm_ops)";
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(sql);
+        }
+        connection.commit();
+    }
+
+    /**
+     * Checks all incoming (movie_name, year) pairs against the existing table for fuzzy duplicates.
+     *
+     * Two match tiers are applied:
+     *   1. Case-insensitive exact match → always auto-merged (different capitalisation, same title).
+     *   2. Trigram similarity ≥ warnThreshold with length-ratio ≥ 0.70 to suppress short-name
+     *      false positives like "Ram" vs "Ram Ram":
+     *        • sim ≥ autoMergeThreshold → auto-merge, printed to stdout
+     *        • sim ≥ warnThreshold      → added to warnOutput for human review
+     *
+     * @param nameYearPairs      unique [movie_name, year] pairs from the incoming CSV
+     * @param warnThreshold      minimum similarity to flag as potential duplicate
+     * @param autoMergeThreshold minimum similarity to automatically redirect to canonical name
+     * @param warnOutput         list populated with human-readable warning strings
+     * @return map of "lower(movie_name)|year" → canonical movie_name in DB
+     */
+    public Map<String, String> findFuzzyMatches(
+        List<String[]> nameYearPairs,
+        double warnThreshold,
+        double autoMergeThreshold,
+        List<String> warnOutput
+    ) throws SQLException {
+        Map<String, String> autoMergeMap = new LinkedHashMap<>();
+        if (nameYearPairs.isEmpty()) return autoMergeMap;
+
+        // Populate session-scoped temp table with incoming pairs
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS _tmp_incoming_movies (movie_name TEXT, year TEXT)");
+            stmt.execute("TRUNCATE _tmp_incoming_movies");
+        }
+        try (PreparedStatement ps =
+                 connection.prepareStatement("INSERT INTO _tmp_incoming_movies VALUES (?, ?)")) {
+            int count = 0;
+            for (String[] pair : nameYearPairs) {
+                ps.setString(1, pair[0]);
+                ps.setString(2, pair[1]);
+                ps.addBatch();
+                if (++count % 1000 == 0) ps.executeBatch();
+            }
+            ps.executeBatch();
+        }
+
+        // Tier 1: case-insensitive exact matches (different formatting, same title)
+        String q1 = "SELECT i.movie_name AS incoming, i.year, e.movie_name AS canonical " +
+            "FROM _tmp_incoming_movies i " +
+            "JOIN " + q(tableName) + " e ON i.year = e.year " +
+            "WHERE lower(trim(i.movie_name)) = lower(trim(e.movie_name)) " +
+            "  AND trim(i.movie_name) != trim(e.movie_name)";
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery(q1)) {
+            while (rs.next()) {
+                String incoming  = rs.getString("incoming");
+                String year      = rs.getString("year");
+                String canonical = rs.getString("canonical");
+                autoMergeMap.put(mergeKey(incoming, year), canonical);
+                System.out.printf("  [AUTO-MERGE case  ] %-45s (%s)  →  %s%n",
+                    "'" + incoming + "'", year, "'" + canonical + "'");
+            }
+        }
+
+        // Tier 2: trigram fuzzy matches (excluding case-insensitive exact matches already handled)
+        //   Length-ratio filter: LEAST/GREATEST >= 0.70 drops "Ram" vs "Ram Ram" (ratio 0.43)
+        //   but keeps "Panakkaran" vs "Pannakkaran" (ratio 0.96).
+        String q2 =
+            "SELECT DISTINCT ON (i.movie_name, i.year) " +
+            "  i.movie_name AS incoming, i.year, e.movie_name AS canonical, " +
+            "  ROUND(similarity(i.movie_name, e.movie_name)::numeric, 3) AS sim " +
+            "FROM _tmp_incoming_movies i " +
+            "JOIN " + q(tableName) + " e ON i.year = e.year " +
+            "WHERE similarity(i.movie_name, e.movie_name) >= ? " +
+            "  AND lower(trim(i.movie_name)) != lower(trim(e.movie_name)) " +
+            "  AND LEAST(length(trim(i.movie_name)), length(trim(e.movie_name)))::float " +
+            "    / GREATEST(length(trim(i.movie_name)), length(trim(e.movie_name)), 1) >= 0.70 " +
+            "ORDER BY i.movie_name, i.year, similarity(i.movie_name, e.movie_name) DESC";
+
+        try (PreparedStatement ps = connection.prepareStatement(q2)) {
+            ps.setDouble(1, warnThreshold);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String incoming  = rs.getString("incoming");
+                    String year      = rs.getString("year");
+                    String canonical = rs.getString("canonical");
+                    double sim       = rs.getDouble("sim");
+
+                    if (sim >= autoMergeThreshold) {
+                        autoMergeMap.put(mergeKey(incoming, year), canonical);
+                        System.out.printf("  [AUTO-MERGE fuzzy %.3f] %-45s (%s)  →  %s%n",
+                            sim, "'" + incoming + "'", year, "'" + canonical + "'");
+                    } else {
+                        warnOutput.add(String.format(
+                            "  [WARN  %.3f] '%-45s (%s)  ≈  '%s'",
+                            sim, incoming + "'", year, canonical));
+                    }
+                }
+            }
+        }
+
+        return autoMergeMap;
+    }
+
+    /**
      * Batch-upserts all rows from the CSV into the table.
+     * autoMergeMap normalises fuzzy-matched incoming movie names to their canonical DB names
+     * before the conflict check, so typo variants land on the same row as the clean name.
      *
      * @param csvData       parsed CSV content
      * @param csvToDb       map of CSV header → DB column name
      * @param dbColumnTypes map of DB column name → PostgreSQL data type (from information_schema)
+     * @param autoMergeMap  map of "lower(movie_name)|year" → canonical movie_name (may be empty)
      */
     public void batchUpsert(CsvData csvData,
                             Map<String, String> csvToDb,
-                            Map<String, String> dbColumnTypes) throws SQLException {
+                            Map<String, String> dbColumnTypes,
+                            Map<String, String> autoMergeMap) throws SQLException {
 
-        // Non-PK DB columns that appear in this CSV, preserving CSV order
         List<String> dataCols = csvData.headers().stream()
             .map(csvToDb::get)
             .filter(Objects::nonNull)
@@ -101,7 +219,7 @@ public class DatabaseService implements AutoCloseable {
         allCols.add(ColumnMapper.YEAR_COL);
         allCols.addAll(dataCols);
 
-        String colList     = allCols.stream().map(this::q).collect(Collectors.joining(", "));
+        String colList      = allCols.stream().map(this::q).collect(Collectors.joining(", "));
         String placeholders = allCols.stream().map(c -> "?").collect(Collectors.joining(", "));
 
         String upsertSql;
@@ -118,13 +236,12 @@ public class DatabaseService implements AutoCloseable {
                 " ON CONFLICT (\"movie_name\", \"year\") DO UPDATE SET " + updateClause;
         }
 
-        // Reverse lookup: dbCol → csvHeader (first match wins for deduplication safety)
         Map<String, String> dbToCsv = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : csvToDb.entrySet()) {
             dbToCsv.putIfAbsent(e.getValue(), e.getKey());
         }
 
-        long processed = 0, skipped = 0;
+        long processed = 0, skipped = 0, merged = 0;
 
         try (PreparedStatement ps = connection.prepareStatement(upsertSql)) {
             int batchCount = 0;
@@ -138,13 +255,20 @@ public class DatabaseService implements AutoCloseable {
                     continue;
                 }
 
+                // Apply fuzzy name normalisation before the conflict check
+                String normalised = autoMergeMap.get(mergeKey(movieName, year));
+                if (normalised != null) {
+                    movieName = normalised;
+                    merged++;
+                }
+
                 ps.setString(1, movieName);
                 ps.setString(2, year);
 
                 for (int i = 0; i < dataCols.size(); i++) {
-                    String dbCol    = dataCols.get(i);
-                    String pgType   = dbColumnTypes.getOrDefault(dbCol, "text");
-                    String rawValue = row.get(dbToCsv.get(dbCol));
+                    String dbCol     = dataCols.get(i);
+                    String pgType    = dbColumnTypes.getOrDefault(dbCol, "text");
+                    String rawValue  = row.get(dbToCsv.get(dbCol));
                     String sanitized = mapper.sanitizeValue(rawValue, pgType);
 
                     if (sanitized == null) {
@@ -178,11 +302,17 @@ public class DatabaseService implements AutoCloseable {
             }
         }
 
-        System.out.printf("Import complete — upserted: %,d | skipped (missing PK): %,d%n",
-            processed, skipped);
+        System.out.printf(
+            "Import complete — upserted: %,d | fuzzy-merged: %,d | skipped (missing PK): %,d%n",
+            processed, merged, skipped);
     }
 
     // ---- private helpers ----
+
+    /** Lookup key for the autoMergeMap: normalised name + year. */
+    private static String mergeKey(String movieName, String year) {
+        return movieName.toLowerCase().trim() + "|" + year.trim();
+    }
 
     private String extractValue(Map<String, String> row, Map<String, String> dbToCsv,
                                 String dbCol, String pgType) {
@@ -192,7 +322,7 @@ public class DatabaseService implements AutoCloseable {
         return (sanitized == null || sanitized.isBlank()) ? null : sanitized;
     }
 
-    /** Double-quotes an identifier, escaping any embedded double-quotes. */
+    /** Double-quotes a SQL identifier, escaping any embedded double-quotes. */
     private String q(String identifier) {
         return "\"" + identifier.replace("\"", "\"\"") + "\"";
     }
