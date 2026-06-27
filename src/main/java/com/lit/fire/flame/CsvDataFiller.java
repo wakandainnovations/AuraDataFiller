@@ -102,52 +102,43 @@ public class CsvDataFiller {
             }
             System.out.println();
 
-            boolean hasReleaseDateCol = csvToDb.containsValue(ColumnMapper.RELEASE_DATE_COL);
+            // Fuzzy duplicate pre-check
+            db.ensureFuzzyIndex();
 
-            if (!hasReleaseDateCol) {
-                // No release_date in CSV — match by movie name only, update if exactly 1 DB row matches
-                System.out.println("No release_date column — using name-only update mode.");
-                System.out.println("Starting name-only update...");
-                db.nameOnlyUpdate(csvData, csvToDb, existingCols);
+            String movieNameHeader = csvToDb.entrySet().stream()
+                .filter(e -> ColumnMapper.MOVIE_NAME_COL.equals(e.getValue()))
+                .map(Map.Entry::getKey).findFirst().orElse(null);
+            String releaseDateHeader = csvToDb.entrySet().stream()
+                .filter(e -> ColumnMapper.RELEASE_DATE_COL.equals(e.getValue()))
+                .map(Map.Entry::getKey).findFirst().orElse(null);
+
+            List<String[]> pairs = extractUniqueNameDatePairs(csvData, movieNameHeader, releaseDateHeader, mapper);
+
+            List<String> warnings = new ArrayList<>();
+            Map<String, String> autoMergeMap;
+            if (pairs.size() > fuzzyMaxPairs) {
+                System.out.printf(
+                    "Skipping fuzzy check — %,d unique pairs exceeds limit of %,d (too large to check efficiently).%n",
+                    pairs.size(), fuzzyMaxPairs);
+                autoMergeMap = Map.of();
             } else {
-                // Normal path: fuzzy duplicate check then batch upsert
-                db.ensureFuzzyIndex();
-
-                String movieNameHeader = csvToDb.entrySet().stream()
-                    .filter(e -> ColumnMapper.MOVIE_NAME_COL.equals(e.getValue()))
-                    .map(Map.Entry::getKey).findFirst().orElse(null);
-                String releaseDateHeader = csvToDb.entrySet().stream()
-                    .filter(e -> ColumnMapper.RELEASE_DATE_COL.equals(e.getValue()))
-                    .map(Map.Entry::getKey).findFirst().orElse(null);
-
-                List<String[]> pairs = extractUniqueNameDatePairs(csvData, movieNameHeader, releaseDateHeader, mapper);
-
-                List<String> warnings = new ArrayList<>();
-                Map<String, String> autoMergeMap;
-                if (pairs.size() > fuzzyMaxPairs) {
-                    System.out.printf(
-                        "Skipping fuzzy check — %,d unique pairs exceeds limit of %,d (too large to check efficiently).%n",
-                        pairs.size(), fuzzyMaxPairs);
-                    autoMergeMap = Map.of();
-                } else {
-                    System.out.printf("Running fuzzy duplicate check (auto-merge ≥ %.2f | warn ≥ %.2f)...%n",
-                        autoMergeThreshold, warnThreshold);
-                    System.out.printf("Checking %,d unique (movie, release_date) pairs against existing data...%n",
-                        pairs.size());
-                    autoMergeMap = db.findFuzzyMatches(pairs, warnThreshold, autoMergeThreshold, warnings);
-                    System.out.printf("Fuzzy check done — auto-merges: %d | potential duplicates: %d%n",
-                        autoMergeMap.size(), warnings.size());
-                    if (!warnings.isEmpty()) {
-                        System.out.println();
-                        System.out.println("Potential duplicates (not auto-merged — review manually):");
-                        warnings.forEach(System.out::println);
-                    }
+                System.out.printf("Running fuzzy duplicate check (auto-merge ≥ %.2f | warn ≥ %.2f)...%n",
+                    autoMergeThreshold, warnThreshold);
+                System.out.printf("Checking %,d unique (movie, release_date) pairs against existing data...%n",
+                    pairs.size());
+                autoMergeMap = db.findFuzzyMatches(pairs, warnThreshold, autoMergeThreshold, warnings);
+                System.out.printf("Fuzzy check done — auto-merges: %d | potential duplicates: %d%n",
+                    autoMergeMap.size(), warnings.size());
+                if (!warnings.isEmpty()) {
+                    System.out.println();
+                    System.out.println("Potential duplicates (not auto-merged — review manually):");
+                    warnings.forEach(System.out::println);
                 }
-                System.out.println();
-
-                System.out.println("Starting import...");
-                db.batchUpsert(csvData, csvToDb, existingCols, autoMergeMap);
             }
+            System.out.println();
+
+            System.out.println("Starting import...");
+            db.batchUpsert(csvData, csvToDb, existingCols, autoMergeMap);
 
         } catch (Exception e) {
             System.err.println("Import failed: " + e.getMessage());
