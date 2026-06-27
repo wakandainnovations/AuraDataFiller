@@ -436,6 +436,113 @@ public class DatabaseService implements AutoCloseable {
             processed, merged, skipped);
     }
 
+    /**
+     * Updates existing rows matched solely by movie_name (case-insensitive).
+     * Used when the source CSV has no release_date column and cannot form the full PK.
+     *
+     * For each CSV row:
+     *   - 0 DB matches  → skipped (not found)
+     *   - 1 DB match    → all non-PK columns from the CSV are written to that row
+     *   - 2+ DB matches → skipped (ambiguous — can't determine which row to update)
+     */
+    public void nameOnlyUpdate(CsvData csvData,
+                               Map<String, String> csvToDb,
+                               Map<String, String> dbColumnTypes) throws SQLException {
+
+        Map<String, String> dbToCsv = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : csvToDb.entrySet()) {
+            dbToCsv.putIfAbsent(e.getValue(), e.getKey());
+        }
+
+        String movieNameHeader = dbToCsv.get(ColumnMapper.MOVIE_NAME_COL);
+        if (movieNameHeader == null) {
+            System.out.println("No movie_name column found — skipping name-only update.");
+            return;
+        }
+
+        List<String> updateCols = csvToDb.values().stream()
+            .filter(col -> !mapper.isPkColumn(col))
+            .distinct()
+            .collect(Collectors.toList());
+
+        if (updateCols.isEmpty()) {
+            System.out.println("No data columns to update — skipping.");
+            return;
+        }
+
+        // Pre-load name → row count for fast per-row lookup
+        Map<String, Long> nameCountMap = new HashMap<>();
+        String countSql = "SELECT lower(trim(\"movie_name\")) AS name_key, count(*) AS cnt " +
+            "FROM " + q(tableName) + " GROUP BY lower(trim(\"movie_name\"))";
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery(countSql)) {
+            while (rs.next()) {
+                nameCountMap.put(rs.getString("name_key"), rs.getLong("cnt"));
+            }
+        }
+
+        String setClauses = updateCols.stream()
+            .map(col -> q(col) + " = ?")
+            .collect(Collectors.joining(", "));
+        String updateSql = "UPDATE " + q(tableName) + " SET " + setClauses +
+            " WHERE lower(trim(\"movie_name\")) = lower(trim(?))";
+
+        long updated = 0, notFound = 0, ambiguous = 0, noName = 0;
+
+        try (PreparedStatement ps = connection.prepareStatement(updateSql)) {
+            int batchCount = 0;
+
+            for (Map<String, String> row : csvData.rows()) {
+                String movieName = mapper.sanitizeValue(row.get(movieNameHeader), "text");
+                if (movieName == null) { noName++; continue; }
+
+                Long count = nameCountMap.get(movieName.toLowerCase().trim());
+                if (count == null || count == 0) { notFound++; continue; }
+                if (count > 1)                   { ambiguous++; continue; }
+
+                for (int i = 0; i < updateCols.size(); i++) {
+                    String dbCol     = updateCols.get(i);
+                    String pgType    = dbColumnTypes.getOrDefault(dbCol, "text");
+                    String rawValue  = row.get(dbToCsv.get(dbCol));
+                    String sanitized = mapper.sanitizeValue(rawValue, pgType);
+
+                    if (sanitized == null) {
+                        ps.setObject(i + 1, null);
+                    } else if (mapper.isNumericType(pgType)) {
+                        try {
+                            ps.setBigDecimal(i + 1, new BigDecimal(sanitized));
+                        } catch (NumberFormatException e) {
+                            ps.setObject(i + 1, null);
+                        }
+                    } else {
+                        ps.setString(i + 1, sanitized);
+                    }
+                }
+                ps.setString(updateCols.size() + 1, movieName);
+
+                ps.addBatch();
+                batchCount++;
+                updated++;
+
+                if (batchCount >= BATCH_SIZE) {
+                    ps.executeBatch();
+                    connection.commit();
+                    batchCount = 0;
+                    System.out.printf("  Updated %,d rows...%n", updated);
+                }
+            }
+
+            if (batchCount > 0) {
+                ps.executeBatch();
+                connection.commit();
+            }
+        }
+
+        System.out.printf(
+            "Name-only update complete — updated: %,d | not found: %,d | ambiguous (skipped): %,d | missing name: %,d%n",
+            updated, notFound, ambiguous, noName);
+    }
+
     // ---- private helpers ----
 
     /** Lookup key for the autoMergeMap: normalised name + release_date. */
