@@ -28,6 +28,8 @@ public class CsvDataFiller {
             appConfig.getProperty("fuzzy.automerge.threshold", "0.93"));
         double warnThreshold = Double.parseDouble(
             appConfig.getProperty("fuzzy.warn.threshold", "0.75"));
+        int fuzzyMaxPairs = Integer.parseInt(
+            appConfig.getProperty("fuzzy.max.pairs", "50000"));
 
         System.out.println("=== AuraDataFiller ===");
         System.out.println("Source : " + filePath);
@@ -101,8 +103,6 @@ public class CsvDataFiller {
             System.out.println();
 
             // Fuzzy duplicate pre-check
-            System.out.printf("Running fuzzy duplicate check (auto-merge ≥ %.2f | warn ≥ %.2f)...%n",
-                autoMergeThreshold, warnThreshold);
             db.ensureFuzzyIndex();
 
             String movieNameHeader = csvToDb.entrySet().stream()
@@ -113,20 +113,27 @@ public class CsvDataFiller {
                 .map(Map.Entry::getKey).findFirst().orElse(null);
 
             List<String[]> pairs = extractUniqueNameDatePairs(csvData, movieNameHeader, releaseDateHeader, mapper);
-            System.out.printf("Checking %,d unique (movie, release_date) pairs against existing data...%n",
-                pairs.size());
 
             List<String> warnings = new ArrayList<>();
-            Map<String, String> autoMergeMap =
-                db.findFuzzyMatches(pairs, warnThreshold, autoMergeThreshold, warnings);
-
-            System.out.printf("Fuzzy check done — auto-merges: %d | potential duplicates: %d%n",
-                autoMergeMap.size(), warnings.size());
-
-            if (!warnings.isEmpty()) {
-                System.out.println();
-                System.out.println("Potential duplicates (not auto-merged — review manually):");
-                warnings.forEach(System.out::println);
+            Map<String, String> autoMergeMap;
+            if (pairs.size() > fuzzyMaxPairs) {
+                System.out.printf(
+                    "Skipping fuzzy check — %,d unique pairs exceeds limit of %,d (too large to check efficiently).%n",
+                    pairs.size(), fuzzyMaxPairs);
+                autoMergeMap = Map.of();
+            } else {
+                System.out.printf("Running fuzzy duplicate check (auto-merge ≥ %.2f | warn ≥ %.2f)...%n",
+                    autoMergeThreshold, warnThreshold);
+                System.out.printf("Checking %,d unique (movie, release_date) pairs against existing data...%n",
+                    pairs.size());
+                autoMergeMap = db.findFuzzyMatches(pairs, warnThreshold, autoMergeThreshold, warnings);
+                System.out.printf("Fuzzy check done — auto-merges: %d | potential duplicates: %d%n",
+                    autoMergeMap.size(), warnings.size());
+                if (!warnings.isEmpty()) {
+                    System.out.println();
+                    System.out.println("Potential duplicates (not auto-merged — review manually):");
+                    warnings.forEach(System.out::println);
+                }
             }
             System.out.println();
 

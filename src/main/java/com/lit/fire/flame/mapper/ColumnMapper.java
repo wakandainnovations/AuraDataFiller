@@ -11,6 +11,7 @@ public class ColumnMapper {
 
     public static final String MOVIE_NAME_COL   = "movie_name";
     public static final String RELEASE_DATE_COL = "release_date";
+    public static final String LANGUAGE_COL     = "language";
     public static final String RELEASE_DAY_COL  = "release_day";
 
     // Enrichment columns added by EnrichmentService
@@ -28,10 +29,13 @@ public class ColumnMapper {
     }
 
     private static final Set<String> MOVIE_NAME_ALIASES = Set.of(
-        "movie name", "movie", "film", "title"
+        "movie name", "movie", "film", "title", "name"
     );
 
-    private static final Set<String> SKIP_CSV_HEADERS = Set.of("overview");
+    private static final Set<String> SKIP_CSV_HEADERS = Set.of(
+        "overview", "description", "tagline",
+        "backdrop_path", "poster_path", "homepage"
+    );
 
     private static final Set<String> NUMERIC_PG_TYPES = Set.of(
         "numeric", "integer", "bigint", "smallint", "real",
@@ -87,7 +91,9 @@ public class ColumnMapper {
     }
 
     public boolean isPkColumn(String dbColumnName) {
-        return MOVIE_NAME_COL.equals(dbColumnName) || RELEASE_DATE_COL.equals(dbColumnName);
+        return MOVIE_NAME_COL.equals(dbColumnName)
+            || RELEASE_DATE_COL.equals(dbColumnName)
+            || LANGUAGE_COL.equals(dbColumnName);
     }
 
     public boolean shouldSkipCsvHeader(String csvHeader) {

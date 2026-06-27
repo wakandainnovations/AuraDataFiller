@@ -50,17 +50,71 @@ public class DatabaseService implements AutoCloseable {
     }
 
     /**
+     * Migrates the PK from (movie_name, release_date) to (movie_name, release_date, language).
+     * Adds the language column if missing, fills NULLs with 'Unknown', then swaps the constraint.
+     * Safe to call on a new table (no existing PK → no-op) or an already-migrated table.
+     */
+    public void migratePrimaryKeyToIncludeLanguage() throws SQLException {
+        // Check if language is already part of the PK — if so, nothing to do
+        String checkLangInPk =
+            "SELECT 1 FROM information_schema.key_column_usage kcu " +
+            "JOIN information_schema.table_constraints tc " +
+            "  ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema " +
+            "WHERE tc.table_schema = 'public' AND tc.table_name = ? " +
+            "  AND tc.constraint_type = 'PRIMARY KEY' AND kcu.column_name = 'language'";
+        try (PreparedStatement ps = connection.prepareStatement(checkLangInPk)) {
+            ps.setString(1, tableName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return;
+            }
+        }
+
+        // Find the existing PK constraint name (may not exist for brand-new tables)
+        String findPk =
+            "SELECT constraint_name FROM information_schema.table_constraints " +
+            "WHERE table_schema = 'public' AND table_name = ? AND constraint_type = 'PRIMARY KEY'";
+        String pkName = null;
+        try (PreparedStatement ps = connection.prepareStatement(findPk)) {
+            ps.setString(1, tableName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) pkName = rs.getString("constraint_name");
+            }
+        }
+        if (pkName == null) return; // brand-new table; CREATE TABLE will set the right PK
+
+        System.out.println("  Migrating primary key → (movie_name, release_date, language)...");
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ADD COLUMN IF NOT EXISTS \"language\" TEXT");
+            stmt.execute("UPDATE " + q(tableName) +
+                " SET \"language\" = 'Unknown' WHERE \"language\" IS NULL OR \"language\" = ''");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ALTER COLUMN \"language\" SET NOT NULL");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ALTER COLUMN \"language\" SET DEFAULT 'Unknown'");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " DROP CONSTRAINT \"" + pkName + "\"");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ADD PRIMARY KEY (\"movie_name\", \"release_date\", \"language\")");
+        }
+        connection.commit();
+        System.out.println("  Primary key migration complete.");
+    }
+
+    /**
      * Creates the movies table if it does not already exist.
-     * Migrates the legacy 'year' column to 'release_date' first when needed.
-     * The schema starts with just the two PK columns; everything else is added dynamically.
+     * Runs legacy-column and PK migrations first when the table already exists.
+     * The schema starts with the three PK columns; everything else is added dynamically.
      */
     public void ensureTableExists() throws SQLException {
         migrateLegacyYearColumn();
+        migratePrimaryKeyToIncludeLanguage();
 
         String sql = "CREATE TABLE IF NOT EXISTS " + q(tableName) + " (" +
             "\"movie_name\"   TEXT NOT NULL, " +
             "\"release_date\" TEXT NOT NULL, " +
-            "PRIMARY KEY (\"movie_name\", \"release_date\")" +
+            "\"language\"     TEXT NOT NULL DEFAULT 'Unknown', " +
+            "PRIMARY KEY (\"movie_name\", \"release_date\", \"language\")" +
             ")";
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(sql);
@@ -246,6 +300,7 @@ public class DatabaseService implements AutoCloseable {
         List<String> allCols = new ArrayList<>();
         allCols.add(ColumnMapper.MOVIE_NAME_COL);
         allCols.add(ColumnMapper.RELEASE_DATE_COL);
+        allCols.add(ColumnMapper.LANGUAGE_COL);
         allCols.addAll(dataCols);
 
         String colList      = allCols.stream().map(this::q).collect(Collectors.joining(", "));
@@ -255,14 +310,14 @@ public class DatabaseService implements AutoCloseable {
         if (dataCols.isEmpty()) {
             upsertSql = "INSERT INTO " + q(tableName) +
                 " (" + colList + ") VALUES (" + placeholders + ")" +
-                " ON CONFLICT (\"movie_name\", \"release_date\") DO NOTHING";
+                " ON CONFLICT (\"movie_name\", \"release_date\", \"language\") DO NOTHING";
         } else {
             String updateClause = dataCols.stream()
                 .map(col -> q(col) + " = EXCLUDED." + q(col))
                 .collect(Collectors.joining(", "));
             upsertSql = "INSERT INTO " + q(tableName) +
                 " (" + colList + ") VALUES (" + placeholders + ")" +
-                " ON CONFLICT (\"movie_name\", \"release_date\") DO UPDATE SET " + updateClause;
+                " ON CONFLICT (\"movie_name\", \"release_date\", \"language\") DO UPDATE SET " + updateClause;
         }
 
         Map<String, String> dbToCsv = new LinkedHashMap<>();
@@ -276,8 +331,10 @@ public class DatabaseService implements AutoCloseable {
             int batchCount = 0;
 
             for (Map<String, String> row : csvData.rows()) {
-                String movieName  = extractValue(row, dbToCsv, ColumnMapper.MOVIE_NAME_COL, "text");
+                String movieName   = extractValue(row, dbToCsv, ColumnMapper.MOVIE_NAME_COL,   "text");
                 String releaseDate = extractValue(row, dbToCsv, ColumnMapper.RELEASE_DATE_COL, "text");
+                String language    = extractValue(row, dbToCsv, ColumnMapper.LANGUAGE_COL,     "text");
+                if (language == null) language = "Unknown";
 
                 if (movieName == null || releaseDate == null) {
                     skipped++;
@@ -293,6 +350,7 @@ public class DatabaseService implements AutoCloseable {
 
                 ps.setString(1, movieName);
                 ps.setString(2, releaseDate);
+                ps.setString(3, language);
 
                 for (int i = 0; i < dataCols.size(); i++) {
                     String dbCol     = dataCols.get(i);
@@ -301,15 +359,15 @@ public class DatabaseService implements AutoCloseable {
                     String sanitized = mapper.sanitizeValue(rawValue, pgType);
 
                     if (sanitized == null) {
-                        ps.setObject(i + 3, null);
+                        ps.setObject(i + 4, null);
                     } else if (mapper.isNumericType(pgType)) {
                         try {
-                            ps.setBigDecimal(i + 3, new BigDecimal(sanitized));
+                            ps.setBigDecimal(i + 4, new BigDecimal(sanitized));
                         } catch (NumberFormatException e) {
-                            ps.setObject(i + 3, null);
+                            ps.setObject(i + 4, null);
                         }
                     } else {
-                        ps.setString(i + 3, sanitized);
+                        ps.setString(i + 4, sanitized);
                     }
                 }
 

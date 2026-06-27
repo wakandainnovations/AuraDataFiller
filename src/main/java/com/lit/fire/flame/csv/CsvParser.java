@@ -25,10 +25,14 @@ public class CsvParser {
                  .setSkipHeaderRecord(true)
                  .setTrim(true)
                  .setIgnoreEmptyLines(true)
+                 .setAllowMissingColumnNames(true)
                  .build()
                  .parse(reader)) {
 
-            List<String> headers = List.copyOf(parser.getHeaderNames());
+            // Drop blank-named columns (e.g. leading-comma index columns)
+            List<String> headers = parser.getHeaderNames().stream()
+                .filter(h -> h != null && !h.isBlank())
+                .collect(java.util.stream.Collectors.toList());
 
             for (CSVRecord record : parser) {
                 Map<String, String> row = new LinkedHashMap<>();
@@ -38,7 +42,7 @@ public class CsvParser {
                 rows.add(row);
             }
 
-            return new CsvData(headers, rows);
+            return new CsvData(List.copyOf(headers), rows);
         }
     }
 }
