@@ -34,7 +34,9 @@ public class ColumnMapper {
 
     private static final Set<String> SKIP_CSV_HEADERS = Set.of(
         "overview", "description", "tagline",
-        "backdrop_path", "poster_path", "homepage"
+        "backdrop_path", "poster_path", "homepage",
+        // columns dropped from movies_data_collection — prevent re-creation on import
+        "originaltitle", "rating", "releasedate"
     );
 
     private static final Set<String> NUMERIC_PG_TYPES = Set.of(
