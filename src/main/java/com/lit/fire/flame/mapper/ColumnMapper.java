@@ -29,7 +29,7 @@ public class ColumnMapper {
     }
 
     private static final Set<String> MOVIE_NAME_ALIASES = Set.of(
-        "movie name", "movie", "film", "title", "name"
+        "movie name", "movie", "film", "title", "name", "originaltitle"
     );
 
     private static final Set<String> SKIP_CSV_HEADERS = Set.of(
@@ -78,7 +78,7 @@ public class ColumnMapper {
     public String toDbColumnName(String csvHeader) {
         String lower = csvHeader.toLowerCase().trim();
         if (MOVIE_NAME_ALIASES.contains(lower)) return MOVIE_NAME_COL;
-        if ("year".equals(lower) || "release_date".equals(lower)) return RELEASE_DATE_COL;
+        if ("year".equals(lower) || "release_date".equals(lower) || "releasedate".equals(lower)) return RELEASE_DATE_COL;
         if ("vote_average".equals(lower))    return "rating_10";
         if ("vote_count".equals(lower))      return "votes";
         if ("original_language".equals(lower)) return "language";
