@@ -102,6 +102,47 @@ public class DatabaseService implements AutoCloseable {
     }
 
     /**
+     * Merges duplicate revenue columns (grossworldwide, worldwide) into 'revenue'
+     * and duplicate runtime columns (timing_min) into 'runtime', then drops the old columns.
+     * Safe to call repeatedly — checks for column existence before acting.
+     */
+    public void migrateColumnAliases() throws SQLException {
+        // revenue aliases: grossworldwide, worldwide → revenue
+        mergeNumericColumnInto("grossworldwide", "revenue");
+        mergeNumericColumnInto("worldwide",      "revenue");
+        // runtime alias: timing_min → runtime
+        mergeNumericColumnInto("timing_min",     "runtime");
+    }
+
+    private void mergeNumericColumnInto(String sourceCol, String targetCol) throws SQLException {
+        String checkSql =
+            "SELECT 1 FROM information_schema.columns " +
+            "WHERE table_schema = 'public' AND table_name = ? AND column_name = ?";
+        boolean sourceExists;
+        try (PreparedStatement ps = connection.prepareStatement(checkSql)) {
+            ps.setString(1, tableName);
+            ps.setString(2, sourceCol);
+            try (ResultSet rs = ps.executeQuery()) {
+                sourceExists = rs.next();
+            }
+        }
+        if (!sourceExists) return;
+
+        try (Statement stmt = connection.createStatement()) {
+            // Ensure target column exists before merging
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ADD COLUMN IF NOT EXISTS " + q(targetCol) + " NUMERIC DEFAULT 0");
+            // Merge: prefer existing target value; fall back to source value
+            stmt.execute("UPDATE " + q(tableName) +
+                " SET " + q(targetCol) + " = COALESCE(NULLIF(" + q(targetCol) + ", 0), NULLIF(" + q(sourceCol) + ", 0), 0)" +
+                " WHERE " + q(sourceCol) + " != 0");
+            stmt.execute("ALTER TABLE " + q(tableName) + " DROP COLUMN " + q(sourceCol));
+        }
+        connection.commit();
+        System.out.println("  Merged column '" + sourceCol + "' → '" + targetCol + "' and dropped '" + sourceCol + "'");
+    }
+
+    /**
      * Creates the movies table if it does not already exist.
      * Runs legacy-column and PK migrations first when the table already exists.
      * The schema starts with the three PK columns; everything else is added dynamically.
@@ -109,6 +150,7 @@ public class DatabaseService implements AutoCloseable {
     public void ensureTableExists() throws SQLException {
         migrateLegacyYearColumn();
         migratePrimaryKeyToIncludeLanguage();
+        migrateColumnAliases();
 
         String sql = "CREATE TABLE IF NOT EXISTS " + q(tableName) + " (" +
             "\"movie_name\"   TEXT NOT NULL, " +

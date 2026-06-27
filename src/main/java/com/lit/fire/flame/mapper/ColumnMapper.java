@@ -82,7 +82,11 @@ public class ColumnMapper {
         if ("vote_average".equals(lower))    return "rating_10";
         if ("vote_count".equals(lower))      return "votes";
         if ("original_language".equals(lower)) return "language";
-        return lower.replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
+        String dbName = lower.replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
+        // Merge duplicate column variants into their canonical names
+        if ("grossworldwide".equals(dbName) || "gross_worldwide".equals(dbName) || "worldwide".equals(dbName)) return "revenue";
+        if ("timing_min".equals(dbName)) return "runtime";
+        return dbName;
     }
 
     /** Returns a pre-declared ColumnType for known enrichment columns, bypassing type inference. */
