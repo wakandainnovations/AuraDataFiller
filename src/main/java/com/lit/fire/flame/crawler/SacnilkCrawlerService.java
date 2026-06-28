@@ -209,6 +209,20 @@ public class SacnilkCrawlerService implements Runnable {
         log(String.format(
             "=== Cycle complete — updated: %d | no data / no match: %d | errors: %d ===",
             updated, noData, errors));
+
+        // --- Phase 5: persist fetched exchange rates to currency_rate_xe ---
+        Map<String, Double> cachedRates = exchangeRate.getCachedRates();
+        if (!cachedRates.isEmpty()) {
+            log("Phase 5: Saving " + cachedRates.size() + " exchange rate(s) to currency_rate_xe...");
+            try (CrawlerDatabaseService db =
+                     new CrawlerDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
+                db.ensureRateTableExists();
+                for (Map.Entry<String, Double> entry : cachedRates.entrySet()) {
+                    db.upsertExchangeRate(entry.getKey(), "INR", "USD", entry.getValue());
+                    log(String.format("  Saved: %s  INR→USD = %.5f", entry.getKey(), entry.getValue()));
+                }
+            }
+        }
     }
 
     // ---- name normalisation and similarity ----

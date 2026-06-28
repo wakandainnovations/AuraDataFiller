@@ -99,6 +99,47 @@ public class CrawlerDatabaseService implements AutoCloseable {
         return updated;
     }
 
+    /**
+     * Creates the currency_rate_xe table if it does not already exist.
+     * Primary key is (rate_date, from_currency, to_currency) so multiple pairs can be stored.
+     */
+    public void ensureRateTableExists() throws SQLException {
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(
+                "CREATE TABLE IF NOT EXISTS currency_rate_xe (" +
+                "  rate_date      DATE        NOT NULL," +
+                "  from_currency  CHAR(3)     NOT NULL," +
+                "  to_currency    CHAR(3)     NOT NULL," +
+                "  rate           NUMERIC     NOT NULL," +
+                "  fetched_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()," +
+                "  PRIMARY KEY (rate_date, from_currency, to_currency)" +
+                ")"
+            );
+        }
+        connection.commit();
+    }
+
+    /**
+     * Inserts or updates a single exchange-rate row.
+     * On conflict (same date + currency pair) the rate and fetched_at are refreshed.
+     */
+    public void upsertExchangeRate(String date, String fromCurrency,
+                                    String toCurrency, double rate) throws SQLException {
+        String sql =
+            "INSERT INTO currency_rate_xe (rate_date, from_currency, to_currency, rate, fetched_at) " +
+            "VALUES (?::date, ?, ?, ?, NOW()) " +
+            "ON CONFLICT (rate_date, from_currency, to_currency) " +
+            "DO UPDATE SET rate = EXCLUDED.rate, fetched_at = NOW()";
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, date);
+            ps.setString(2, fromCurrency);
+            ps.setString(3, toCurrency);
+            ps.setDouble(4, rate);
+            ps.executeUpdate();
+        }
+        connection.commit();
+    }
+
     private String q(String identifier) {
         return "\"" + identifier.replace("\"", "\"\"") + "\"";
     }

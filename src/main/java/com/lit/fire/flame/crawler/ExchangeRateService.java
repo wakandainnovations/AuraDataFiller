@@ -8,6 +8,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -87,6 +88,11 @@ public class ExchangeRateService {
     public long inrCroreToUsd(double crore, double inrToUsdRate) {
         double inr = crore * INR_PER_CRORE;
         return Math.round(inr * inrToUsdRate);
+    }
+
+    /** Returns all rates fetched so far this instance (date → INR→USD rate). */
+    public Map<String, Double> getCachedRates() {
+        return Collections.unmodifiableMap(cache);
     }
 
     private String resolveQueryDate(String releaseDate) {
