@@ -67,6 +67,21 @@ public class SacnilkCrawlerService implements Runnable {
         log("Service stopped.");
     }
 
+    /**
+     * Runs exactly one crawl cycle synchronously, then returns.
+     * Intended for the {@code --crawl} CLI mode where the JVM should exit after completion.
+     */
+    public void runOnce() throws Exception {
+        Properties secrets = loadProperties("secrets.properties", true);
+        Properties config  = loadProperties("application.properties", false);
+
+        long crawlDelayMs = Long.parseLong(config.getProperty("crawler.request.delay.ms",  "1500"));
+        double threshold  = Double.parseDouble(config.getProperty("crawler.match.threshold", "0.70"));
+        String tableName  = config.getProperty("table.name", "movies");
+
+        runCrawlCycle(secrets, tableName, crawlDelayMs, threshold);
+    }
+
     // ---- crawl cycle ----
 
     private void runCrawlCycle(Properties secrets, String tableName,
