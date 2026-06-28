@@ -95,6 +95,7 @@ public class CrawlerDatabaseService implements AutoCloseable {
         String sql = "SELECT movie_name, LEFT(release_date, 4) AS yr, MIN(release_date) AS release_date " +
             "FROM " + q(tableName) +
             " WHERE release_date IS NOT NULL AND LENGTH(release_date) >= 4 " +
+            "  AND LEFT(release_date, 4) >= '1980' " +
             "  AND (COALESCE(\"revenue\", 0) = 0 OR COALESCE(\"budget\", 0) = 0) " +
             "GROUP BY movie_name, LEFT(release_date, 4) " +
             "ORDER BY yr, movie_name";

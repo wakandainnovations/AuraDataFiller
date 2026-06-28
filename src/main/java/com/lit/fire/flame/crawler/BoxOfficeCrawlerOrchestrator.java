@@ -217,6 +217,13 @@ public class BoxOfficeCrawlerOrchestrator implements Runnable {
                     errors++;
                     db.rollback();
                     logErr(String.format("[Koimoi] Error for '%s' (%s): %s", name, year, e.getMessage()));
+                    // 403 on the search endpoint means the site is blocking the crawler —
+                    // no further search requests will succeed, so abort the phase.
+                    if (e.getMessage() != null && e.getMessage().contains("HTTP 403")
+                            && e.getMessage().contains("/?s=")) {
+                        logErr("[Koimoi] Search endpoint blocked (403) — aborting phase.");
+                        break;
+                    }
                 }
             }
         }
