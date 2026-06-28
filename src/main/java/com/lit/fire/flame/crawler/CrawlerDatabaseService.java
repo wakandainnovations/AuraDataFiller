@@ -1,6 +1,5 @@
 package com.lit.fire.flame.crawler;
 
-import java.math.BigDecimal;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
@@ -49,21 +48,25 @@ public class CrawlerDatabaseService implements AutoCloseable {
 
     /**
      * Returns all distinct (movie_name, release_year) pairs stored in the table.
-     * Each element is a String[2]: {movie_name, 4-digit-year}.
+     * Each element is a String[3]: {movie_name, 4-digit-year, earliest_release_date}.
+     * The earliest release_date within the year is included so callers can look up
+     * the historical exchange rate for that specific date.
      */
     public List<String[]> getAllMovieNameYears() throws SQLException {
         List<String[]> result = new ArrayList<>();
-        String sql = "SELECT DISTINCT movie_name, LEFT(release_date, 4) AS yr " +
+        String sql = "SELECT movie_name, LEFT(release_date, 4) AS yr, MIN(release_date) AS release_date " +
             "FROM " + q(tableName) +
             " WHERE release_date IS NOT NULL AND LENGTH(release_date) >= 4 " +
+            "GROUP BY movie_name, LEFT(release_date, 4) " +
             "ORDER BY yr, movie_name";
         try (Statement stmt = connection.createStatement();
              ResultSet rs   = stmt.executeQuery(sql)) {
             while (rs.next()) {
-                String name = rs.getString("movie_name");
-                String yr   = rs.getString("yr");
+                String name        = rs.getString("movie_name");
+                String yr          = rs.getString("yr");
+                String releaseDate = rs.getString("release_date");
                 if (name != null && yr != null && yr.matches("\\d{4}")) {
-                    result.add(new String[]{name, yr});
+                    result.add(new String[]{name, yr, releaseDate});
                 }
             }
         }
@@ -71,22 +74,23 @@ public class CrawlerDatabaseService implements AutoCloseable {
     }
 
     /**
-     * Updates revenue and/or budget for every row whose movie_name matches
-     * and whose release_date starts with the given year.
+     * Updates revenue and/or budget (both in full USD) for every row whose
+     * movie_name matches and whose release_date starts with the given year.
      *
+     * Values are already converted from INR Crore to whole USD by the caller.
      * Only non-null values are written; the other column is left unchanged via COALESCE.
      *
      * @return number of rows updated
      */
     public int updateBoxOffice(String movieName, String year,
-                                Double worldwideCr, Double budgetCr) throws SQLException {
+                                Long revenueUsd, Long budgetUsd) throws SQLException {
         String sql = "UPDATE " + q(tableName) +
             " SET \"revenue\" = COALESCE(?, \"revenue\"), \"budget\" = COALESCE(?, \"budget\")" +
             " WHERE \"movie_name\" = ? AND LEFT(\"release_date\", 4) = ?";
         int updated;
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
-            ps.setObject(1, worldwideCr != null ? BigDecimal.valueOf(worldwideCr) : null);
-            ps.setObject(2, budgetCr    != null ? BigDecimal.valueOf(budgetCr)    : null);
+            ps.setObject(1, revenueUsd);
+            ps.setObject(2, budgetUsd);
             ps.setString(3, movieName);
             ps.setString(4, year);
             updated = ps.executeUpdate();

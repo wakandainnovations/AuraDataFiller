@@ -87,7 +87,7 @@ public class SacnilkCrawlerService implements Runnable {
 
         // --- Phase 2: load DB movies into memory ---
         log("Phase 2: Loading movies from database...");
-        List<String[]> dbMovies; // each: [movie_name, 4-digit-year]
+        List<String[]> dbMovies; // each: [movie_name, 4-digit-year, release_date]
         try (CrawlerDatabaseService db =
                  new CrawlerDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
 
@@ -105,16 +105,16 @@ public class SacnilkCrawlerService implements Runnable {
             return;
         }
 
-        // Build lookup: year → list of [original_name, normalized_name]
+        // Build lookup: year → list of [original_name, normalized_name, release_date]
         Map<String, List<String[]>> dbByYear = new HashMap<>();
         for (String[] m : dbMovies) {
             dbByYear.computeIfAbsent(m[1], k -> new ArrayList<>())
-                    .add(new String[]{m[0], normalize(m[0])});
+                    .add(new String[]{m[0], normalize(m[0]), m[2]});
         }
 
         // --- Phase 3: match sacnilk slugs to DB entries ---
         log("Phase 3: Matching sacnilk movies to database entries (threshold=" + threshold + ")...");
-        List<String[]> matched = new ArrayList<>(); // [slug, dbMovieName, year]
+        List<String[]> matched = new ArrayList<>(); // [slug, dbMovieName, year, releaseDate]
 
         for (String slug : slugs) {
             String year = parser.extractYearFromSlug(slug);
@@ -123,18 +123,20 @@ public class SacnilkCrawlerService implements Runnable {
             String sacnilkNorm = normalize(parser.extractNameFromSlug(slug));
             List<String[]> candidates = dbByYear.getOrDefault(year, List.of());
 
-            String bestName  = null;
-            double bestScore = 0;
+            String bestName        = null;
+            String bestReleaseDate = null;
+            double bestScore       = 0;
             for (String[] candidate : candidates) {
                 double score = similarity(sacnilkNorm, candidate[1]);
                 if (score > bestScore) {
-                    bestScore = score;
-                    bestName  = candidate[0];
+                    bestScore       = score;
+                    bestName        = candidate[0];
+                    bestReleaseDate = candidate[2];
                 }
             }
 
             if (bestScore >= threshold) {
-                matched.add(new String[]{slug, bestName, year});
+                matched.add(new String[]{slug, bestName, year, bestReleaseDate});
             }
         }
         log(String.format("Matched %d sacnilk movie(s) to database entries.", matched.size()));
@@ -144,19 +146,21 @@ public class SacnilkCrawlerService implements Runnable {
             return;
         }
 
-        // --- Phase 4: fetch detail pages and update DB ---
+        // --- Phase 4: fetch detail pages, convert to USD, and update DB ---
         log(String.format("Phase 4: Fetching detail pages (delay: %d ms between requests)...", crawlDelayMs));
 
         int updated = 0, noData = 0, errors = 0;
         long lastRequestAt = 0;
+        ExchangeRateService exchangeRate = new ExchangeRateService();
 
         try (CrawlerDatabaseService db =
                  new CrawlerDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
 
             for (String[] match : matched) {
-                String slug   = match[0];
-                String dbName = match[1];
-                String year   = match[2];
+                String slug        = match[0];
+                String dbName      = match[1];
+                String year        = match[2];
+                String releaseDate = match[3];
 
                 // Honour crawl-delay before every detail-page request
                 long elapsed = System.currentTimeMillis() - lastRequestAt;
@@ -173,16 +177,22 @@ public class SacnilkCrawlerService implements Runnable {
                         continue;
                     }
 
-                    int rows = db.updateBoxOffice(dbName, year, rec.worldwideCr(), rec.budgetCr());
+                    double inrUsdRate = exchangeRate.getInrToUsdRate(releaseDate);
+                    Long revenueUsd = rec.worldwideCr() != null
+                        ? exchangeRate.inrCroreToUsd(rec.worldwideCr(), inrUsdRate) : null;
+                    Long budgetUsd = rec.budgetCr() != null
+                        ? exchangeRate.inrCroreToUsd(rec.budgetCr(), inrUsdRate) : null;
+
+                    int rows = db.updateBoxOffice(dbName, year, revenueUsd, budgetUsd);
                     if (rows > 0) {
                         updated++;
                         log(String.format(
-                            "Updated '%-45s' (%s) | WW: %s Cr | Budget: %s Cr",
-                            dbName, year,
-                            rec.worldwideCr() != null ? String.format("%.2f", rec.worldwideCr()) : "N/A",
-                            rec.budgetCr()    != null ? String.format("%.2f", rec.budgetCr())    : "N/A"));
+                            "Updated '%-45s' (%s) | rate=%.5f | WW: $%s | Budget: $%s",
+                            dbName, year, inrUsdRate,
+                            revenueUsd != null ? String.format("%,d", revenueUsd) : "N/A",
+                            budgetUsd  != null ? String.format("%,d", budgetUsd)  : "N/A"));
                     } else {
-                        noData++; // matched but no rows updated (movie not in DB for that year?)
+                        noData++;
                     }
 
                 } catch (InterruptedException e) {
