@@ -20,9 +20,46 @@ import java.util.*;
  * Each secondary source (BOM, Koimoi) only processes movies that still have
  * revenue=0 or budget=0 after the preceding source ran, so work is not duplicated.
  */
-public class BoxOfficeCrawlerOrchestrator {
+public class BoxOfficeCrawlerOrchestrator implements Runnable {
 
     private static final String PREFIX = "[CRAWLER] ";
+
+    /**
+     * Daemon loop: runs a full multi-source cycle (sacnilk → BOM → Koimoi) every 24 hours.
+     * Intended to be started as a background thread in {@code --watch} / {@code --batch} modes.
+     * Respects {@code crawler.enabled}, {@code crawler.initial.delay.ms}, and
+     * {@code crawler.interval.hours} from application.properties.
+     */
+    @Override
+    public void run() {
+        Properties config = loadProperties("application.properties", false);
+
+        if (!Boolean.parseBoolean(config.getProperty("crawler.enabled", "true"))) {
+            log("Disabled via crawler.enabled=false — exiting.");
+            return;
+        }
+
+        long initialDelayMs = Long.parseLong(config.getProperty("crawler.initial.delay.ms", "10000"));
+        long intervalMs     = Long.parseLong(config.getProperty("crawler.interval.hours",   "24")) * 3_600_000L;
+
+        if (!sleep(initialDelayMs, "initial startup delay")) return;
+
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                runOnce();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                logErr("Crawl cycle failed: " + e.getMessage());
+                e.printStackTrace(System.err);
+            }
+
+            log(String.format("Next crawl in %d hour(s). Sleeping...", intervalMs / 3_600_000L));
+            if (!sleep(intervalMs, "inter-cycle interval")) break;
+        }
+        log("Service stopped.");
+    }
 
     /**
      * Runs one complete multi-source enrichment cycle synchronously and returns.
@@ -217,6 +254,17 @@ public class BoxOfficeCrawlerOrchestrator {
     private void throttle(long lastRequestAt, long delayMs) throws InterruptedException {
         long elapsed = System.currentTimeMillis() - lastRequestAt;
         if (lastRequestAt > 0 && elapsed < delayMs) Thread.sleep(delayMs - elapsed);
+    }
+
+    private boolean sleep(long ms, String reason) {
+        try {
+            Thread.sleep(ms);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log("Interrupted during " + reason + " — stopping.");
+            return false;
+        }
     }
 
     /**

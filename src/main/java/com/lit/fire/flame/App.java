@@ -40,7 +40,7 @@ public class App {
     }
 
     private static void startDaemonCrawler() {
-        Thread t = new Thread(new SacnilkCrawlerService(), "sacnilk-crawler");
+        Thread t = new Thread(new BoxOfficeCrawlerOrchestrator(), "box-office-crawler");
         t.setDaemon(true);
         t.start();
     }

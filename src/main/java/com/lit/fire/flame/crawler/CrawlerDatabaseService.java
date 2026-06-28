@@ -142,8 +142,9 @@ public class CrawlerDatabaseService implements AutoCloseable {
      * Updates all sacnilk-sourced fields for every row matching movieName + year.
      *
      * Update policy per column:
-     *   revenue / budget  – always overwrite when a non-null value is provided
-     *                       (sacnilk is the primary box-office source)
+     *   revenue / budget  – only set when the current DB value is 0, NULL, or negative
+     *                       (treats those as "missing / wrong format"); a positive value
+     *                       is already valid and is left untouched
      *   runtime           – set when current value is 0 or NULL and sacnilk has a value
      *   genre             – set when current value is NULL or empty
      *   language          – set when current value is NULL, empty, or "Unknown"
@@ -158,8 +159,10 @@ public class CrawlerDatabaseService implements AutoCloseable {
                                    String language, Double rating, String status) throws SQLException {
         String sql =
             "UPDATE " + q(tableName) + " SET" +
-            "  \"revenue\"   = COALESCE(?, \"revenue\")," +
-            "  \"budget\"    = COALESCE(?, \"budget\")," +
+            "  \"revenue\"   = CASE WHEN ? IS NOT NULL AND COALESCE(\"revenue\", 0) <= 0" +
+            "                  THEN ? ELSE \"revenue\" END," +
+            "  \"budget\"    = CASE WHEN ? IS NOT NULL AND COALESCE(\"budget\", 0) <= 0" +
+            "                  THEN ? ELSE \"budget\" END," +
             "  \"runtime\"   = CASE WHEN ? IS NOT NULL" +
             "                       AND COALESCE(\"runtime\", 0) = 0" +
             "                  THEN ? ELSE \"runtime\" END," +
@@ -181,8 +184,11 @@ public class CrawlerDatabaseService implements AutoCloseable {
         int updated;
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             int i = 1;
-            // revenue / budget (NUMERIC)
+            // revenue (NUMERIC, appears twice: WHEN condition + THEN value)
             setLongOrNull(ps, i++, revenueUsd);
+            setLongOrNull(ps, i++, revenueUsd);
+            // budget (NUMERIC, appears twice: WHEN condition + THEN value)
+            setLongOrNull(ps, i++, budgetUsd);
             setLongOrNull(ps, i++, budgetUsd);
             // runtime (NUMERIC, appears twice: condition + value)
             setIntOrNull(ps, i++, runtimeMinutes);
