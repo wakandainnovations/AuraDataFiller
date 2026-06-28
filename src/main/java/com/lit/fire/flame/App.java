@@ -1,8 +1,16 @@
 package com.lit.fire.flame;
 
+import com.lit.fire.flame.crawler.SacnilkCrawlerService;
+
 public class App {
 
     public static void main(String[] args) throws Exception {
+        // Start the Sacnilk box-office crawler as a background daemon thread at every startup.
+        // Being a daemon, it is automatically terminated when the JVM exits.
+        Thread crawlerThread = new Thread(new SacnilkCrawlerService(), "sacnilk-crawler");
+        crawlerThread.setDaemon(true);
+        crawlerThread.start();
+
         if (args.length < 1) {
             printUsage();
             System.exit(1);
