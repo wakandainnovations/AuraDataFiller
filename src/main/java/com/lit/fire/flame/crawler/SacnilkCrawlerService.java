@@ -86,7 +86,7 @@ public class SacnilkCrawlerService implements Runnable {
 
     private void runCrawlCycle(Properties secrets, String tableName,
                                 long crawlDelayMs, double threshold) throws Exception {
-        log("=== Starting box-office enrichment cycle from sacnilk.com ===");
+        log("=== Starting sacnilk.com enrichment cycle ===");
 
         String dbUrl      = secrets.getProperty("db.url");
         String dbUser     = secrets.getProperty("db.user");
@@ -100,9 +100,11 @@ public class SacnilkCrawlerService implements Runnable {
         log(String.format("Found %d movie slugs.", slugs.size()));
         throttle(crawlDelayMs);
 
-        // --- Phase 2: load DB movies into memory ---
+        // --- Phase 2: load DB movies + pre-load exchange rates ---
         log("Phase 2: Loading movies from database...");
         List<String[]> dbMovies; // each: [movie_name, 4-digit-year, release_date]
+        ExchangeRateService exchangeRate = new ExchangeRateService();
+
         try (CrawlerDatabaseService db =
                  new CrawlerDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
 
@@ -111,7 +113,13 @@ public class SacnilkCrawlerService implements Runnable {
                 return;
             }
             db.ensureColumnsExist();
+            db.ensureRateTableExists();
             dbMovies = db.getAllMovieNameYears();
+
+            // Pre-populate exchange rate cache from DB to avoid redundant xe.com fetches
+            Map<String, Double> existingRates = db.getExistingRates("INR", "USD");
+            exchangeRate.preloadCache(existingRates);
+            log(String.format("Pre-loaded %d exchange rate(s) from currency_rate_xe.", existingRates.size()));
         }
         log(String.format("Loaded %,d distinct movie entries from database.", dbMovies.size()));
 
@@ -166,7 +174,6 @@ public class SacnilkCrawlerService implements Runnable {
 
         int updated = 0, noData = 0, errors = 0;
         long lastRequestAt = 0;
-        ExchangeRateService exchangeRate = new ExchangeRateService();
 
         try (CrawlerDatabaseService db =
                  new CrawlerDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
@@ -187,25 +194,51 @@ public class SacnilkCrawlerService implements Runnable {
                     BoxOfficeRecord rec = parser.parseMovieDetailPage(slug);
                     lastRequestAt = System.currentTimeMillis();
 
-                    if (rec.worldwideCr() == null && rec.budgetCr() == null) {
+                    boolean hasBoxOffice = rec.worldwideCr() != null || rec.budgetCr() != null;
+                    boolean hasMetadata  = rec.genre() != null || rec.language() != null
+                                          || rec.runtimeMinutes() != null || rec.rating() != null
+                                          || rec.status() != null;
+
+                    if (!hasBoxOffice && !hasMetadata) {
                         noData++;
                         continue;
                     }
 
-                    double inrUsdRate = exchangeRate.getInrToUsdRate(releaseDate);
-                    Long revenueUsd = rec.worldwideCr() != null
-                        ? exchangeRate.inrCroreToUsd(rec.worldwideCr(), inrUsdRate) : null;
-                    Long budgetUsd = rec.budgetCr() != null
-                        ? exchangeRate.inrCroreToUsd(rec.budgetCr(), inrUsdRate) : null;
+                    // Convert INR Crore to USD (rate from DB cache or xe.com)
+                    Long revenueUsd = null;
+                    Long budgetUsd  = null;
+                    double inrUsdRate = 0;
 
-                    int rows = db.updateBoxOffice(dbName, year, revenueUsd, budgetUsd);
+                    if (hasBoxOffice) {
+                        inrUsdRate = exchangeRate.getInrToUsdRate(releaseDate);
+                        revenueUsd = rec.worldwideCr() != null
+                            ? exchangeRate.inrCroreToUsd(rec.worldwideCr(), inrUsdRate) : null;
+                        budgetUsd = rec.budgetCr() != null
+                            ? exchangeRate.inrCroreToUsd(rec.budgetCr(), inrUsdRate) : null;
+                    }
+
+                    int rows = db.updateMovieDetails(
+                        dbName, year,
+                        revenueUsd, budgetUsd,
+                        rec.runtimeMinutes(), rec.genre(),
+                        rec.language(), rec.rating(), rec.status());
+
                     if (rows > 0) {
                         updated++;
                         log(String.format(
-                            "Updated '%-45s' (%s) | rate=%.5f | WW: $%s | Budget: $%s",
-                            dbName, year, inrUsdRate,
-                            revenueUsd != null ? String.format("%,d", revenueUsd) : "N/A",
-                            budgetUsd  != null ? String.format("%,d", budgetUsd)  : "N/A"));
+                            "Updated '%-45s' (%s)%s | genre=%s | lang=%s | runtime=%s | rating=%s | status=%s",
+                            dbName, year,
+                            hasBoxOffice
+                                ? String.format(" | rate=%.5f | WW=$%s | Budget=$%s",
+                                    inrUsdRate,
+                                    revenueUsd != null ? String.format("%,d", revenueUsd) : "N/A",
+                                    budgetUsd  != null ? String.format("%,d", budgetUsd)  : "N/A")
+                                : "",
+                            rec.genre()          != null ? rec.genre()                    : "N/A",
+                            rec.language()       != null ? rec.language()                 : "N/A",
+                            rec.runtimeMinutes() != null ? rec.runtimeMinutes() + " min"  : "N/A",
+                            rec.rating()         != null ? rec.rating()                   : "N/A",
+                            rec.status()         != null ? rec.status()                   : "N/A"));
                     } else {
                         noData++;
                     }
@@ -225,18 +258,19 @@ public class SacnilkCrawlerService implements Runnable {
             "=== Cycle complete — updated: %d | no data / no match: %d | errors: %d ===",
             updated, noData, errors));
 
-        // --- Phase 5: persist fetched exchange rates to currency_rate_xe ---
-        Map<String, Double> cachedRates = exchangeRate.getCachedRates();
-        if (!cachedRates.isEmpty()) {
-            log("Phase 5: Saving " + cachedRates.size() + " exchange rate(s) to currency_rate_xe...");
+        // --- Phase 5: persist newly fetched exchange rates to currency_rate_xe ---
+        Map<String, Double> newRates = exchangeRate.getNewlyFetchedRates();
+        if (!newRates.isEmpty()) {
+            log("Phase 5: Saving " + newRates.size() + " new exchange rate(s) to currency_rate_xe...");
             try (CrawlerDatabaseService db =
                      new CrawlerDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
-                db.ensureRateTableExists();
-                for (Map.Entry<String, Double> entry : cachedRates.entrySet()) {
+                for (Map.Entry<String, Double> entry : newRates.entrySet()) {
                     db.upsertExchangeRate(entry.getKey(), "INR", "USD", entry.getValue());
                     log(String.format("  Saved: %s  INR→USD = %.5f", entry.getKey(), entry.getValue()));
                 }
             }
+        } else {
+            log("Phase 5: All exchange rates were already in currency_rate_xe — nothing new to save.");
         }
     }
 

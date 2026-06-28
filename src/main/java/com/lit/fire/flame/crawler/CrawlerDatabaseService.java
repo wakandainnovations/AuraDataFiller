@@ -2,7 +2,9 @@ package com.lit.fire.flame.crawler;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Database operations for the Sacnilk box-office crawler.
@@ -33,7 +35,7 @@ public class CrawlerDatabaseService implements AutoCloseable {
     }
 
     /**
-     * Adds the revenue and budget columns when they are not already present.
+     * Ensures that all columns written by the crawler exist in the table.
      * Safe to call on every startup (uses ADD COLUMN IF NOT EXISTS).
      */
     public void ensureColumnsExist() throws SQLException {
@@ -42,6 +44,16 @@ public class CrawlerDatabaseService implements AutoCloseable {
                 " ADD COLUMN IF NOT EXISTS \"revenue\" NUMERIC DEFAULT 0");
             stmt.execute("ALTER TABLE " + q(tableName) +
                 " ADD COLUMN IF NOT EXISTS \"budget\" NUMERIC DEFAULT 0");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ADD COLUMN IF NOT EXISTS \"runtime\" NUMERIC DEFAULT 0");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ADD COLUMN IF NOT EXISTS \"genre\" TEXT");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ADD COLUMN IF NOT EXISTS \"language\" TEXT");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ADD COLUMN IF NOT EXISTS \"rating_10\" NUMERIC DEFAULT 0");
+            stmt.execute("ALTER TABLE " + q(tableName) +
+                " ADD COLUMN IF NOT EXISTS \"status\" TEXT");
         }
         connection.commit();
     }
@@ -127,6 +139,99 @@ public class CrawlerDatabaseService implements AutoCloseable {
     }
 
     /**
+     * Updates all sacnilk-sourced fields for every row matching movieName + year.
+     *
+     * Update policy per column:
+     *   revenue / budget  – always overwrite when a non-null value is provided
+     *                       (sacnilk is the primary box-office source)
+     *   runtime           – set when current value is 0 or NULL and sacnilk has a value
+     *   genre             – set when current value is NULL or empty
+     *   language          – set when current value is NULL, empty, or "Unknown"
+     *   rating_10         – set when current value is 0 or NULL and sacnilk has a value
+     *   status            – set when current value is NULL or empty
+     *
+     * @return number of rows updated
+     */
+    public int updateMovieDetails(String movieName, String year,
+                                   Long revenueUsd, Long budgetUsd,
+                                   Integer runtimeMinutes, String genre,
+                                   String language, Double rating, String status) throws SQLException {
+        String sql =
+            "UPDATE " + q(tableName) + " SET" +
+            "  \"revenue\"   = COALESCE(?, \"revenue\")," +
+            "  \"budget\"    = COALESCE(?, \"budget\")," +
+            "  \"runtime\"   = CASE WHEN ? IS NOT NULL" +
+            "                       AND COALESCE(\"runtime\", 0) = 0" +
+            "                  THEN ? ELSE \"runtime\" END," +
+            "  \"genre\"     = CASE WHEN ? IS NOT NULL AND ? <> ''" +
+            "                       AND (\"genre\" IS NULL OR \"genre\" = '')" +
+            "                  THEN ? ELSE \"genre\" END," +
+            "  \"language\"  = CASE WHEN ? IS NOT NULL AND ? <> ''" +
+            "                       AND (\"language\" IS NULL OR \"language\" = ''" +
+            "                            OR \"language\" = 'Unknown')" +
+            "                  THEN ? ELSE \"language\" END," +
+            "  \"rating_10\" = CASE WHEN ? IS NOT NULL" +
+            "                       AND COALESCE(\"rating_10\", 0) = 0" +
+            "                  THEN ? ELSE \"rating_10\" END," +
+            "  \"status\"    = CASE WHEN ? IS NOT NULL AND ? <> ''" +
+            "                       AND (\"status\" IS NULL OR \"status\" = '')" +
+            "                  THEN ? ELSE \"status\" END" +
+            " WHERE \"movie_name\" = ? AND LEFT(\"release_date\", 4) = ?";
+
+        int updated;
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            int i = 1;
+            // revenue / budget (NUMERIC)
+            setLongOrNull(ps, i++, revenueUsd);
+            setLongOrNull(ps, i++, budgetUsd);
+            // runtime (NUMERIC, appears twice: condition + value)
+            setIntOrNull(ps, i++, runtimeMinutes);
+            setIntOrNull(ps, i++, runtimeMinutes);
+            // genre (TEXT, appears three times: not-null, not-empty, value)
+            setStringOrNull(ps, i++, genre);
+            setStringOrNull(ps, i++, genre);
+            setStringOrNull(ps, i++, genre);
+            // language (TEXT, appears three times)
+            setStringOrNull(ps, i++, language);
+            setStringOrNull(ps, i++, language);
+            setStringOrNull(ps, i++, language);
+            // rating_10 (NUMERIC, appears twice)
+            setDoubleOrNull(ps, i++, rating);
+            setDoubleOrNull(ps, i++, rating);
+            // status (TEXT, appears three times)
+            setStringOrNull(ps, i++, status);
+            setStringOrNull(ps, i++, status);
+            setStringOrNull(ps, i++, status);
+            // WHERE
+            ps.setString(i++, movieName);
+            ps.setString(i,   year);
+            updated = ps.executeUpdate();
+        }
+        connection.commit();
+        return updated;
+    }
+
+    private void setLongOrNull(PreparedStatement ps, int idx, Long value) throws SQLException {
+        if (value != null) ps.setLong(idx, value);
+        else ps.setNull(idx, java.sql.Types.NUMERIC);
+    }
+
+    private void setIntOrNull(PreparedStatement ps, int idx, Integer value) throws SQLException {
+        if (value != null) ps.setInt(idx, value);
+        else ps.setNull(idx, java.sql.Types.NUMERIC);
+    }
+
+    private void setDoubleOrNull(PreparedStatement ps, int idx, Double value) throws SQLException {
+        if (value != null) ps.setDouble(idx, value);
+        else ps.setNull(idx, java.sql.Types.NUMERIC);
+    }
+
+    private void setStringOrNull(PreparedStatement ps, int idx, String value) throws SQLException {
+        if (value != null) ps.setString(idx, value);
+        else ps.setNull(idx, java.sql.Types.VARCHAR);
+    }
+
+    /**
      * Like updateBoxOffice but only writes a column when it currently holds 0.
      * Used by secondary crawlers (BOM, Koimoi) to avoid overwriting data already
      * set by a higher-priority source.
@@ -171,6 +276,33 @@ public class CrawlerDatabaseService implements AutoCloseable {
             );
         }
         connection.commit();
+    }
+
+    /**
+     * Loads all exchange rates for the given currency pair from currency_rate_xe.
+     * Returns a map of date-string (YYYY-MM-DD) → rate.
+     * Returns an empty map when the table does not yet exist.
+     */
+    public Map<String, Double> getExistingRates(String fromCurrency, String toCurrency) throws SQLException {
+        Map<String, Double> result = new HashMap<>();
+        String checkSql = "SELECT 1 FROM information_schema.tables " +
+            "WHERE table_schema = 'public' AND table_name = 'currency_rate_xe'";
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs   = stmt.executeQuery(checkSql)) {
+            if (!rs.next()) return result;
+        }
+        String sql = "SELECT rate_date::text, rate FROM currency_rate_xe " +
+            "WHERE from_currency = ? AND to_currency = ?";
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, fromCurrency);
+            ps.setString(2, toCurrency);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.put(rs.getString(1), rs.getDouble(2));
+                }
+            }
+        }
+        return result;
     }
 
     /**

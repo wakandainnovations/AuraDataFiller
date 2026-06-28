@@ -82,7 +82,8 @@ public class BoxOfficeMojoParser {
         Long budgetUsd  = parseBudgetUsd(pageHtml);
         if (revenueUsd == null && budgetUsd == null) return null;
 
-        return new BoxOfficeRecord(movieName, year, bestPath, null, null, revenueUsd, budgetUsd);
+        return new BoxOfficeRecord(movieName, year, bestPath, null, null, revenueUsd, budgetUsd,
+                                   null, null, null, null, null);
     }
 
     // ---- private helpers ----
