@@ -249,6 +249,7 @@ public class SacnilkCrawlerService implements Runnable {
                 } catch (Exception e) {
                     lastRequestAt = System.currentTimeMillis();
                     errors++;
+                    db.rollback();
                     logErr(String.format("Error processing slug '%s': %s", slug, e.getMessage()));
                 }
             }

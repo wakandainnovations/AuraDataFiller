@@ -152,6 +152,7 @@ public class BoxOfficeCrawlerOrchestrator implements Runnable {
                 } catch (Exception e) {
                     lastRequestAt = System.currentTimeMillis();
                     errors++;
+                    db.rollback();
                     logErr(String.format("[BOM] Error for '%s' (%s): %s", name, year, e.getMessage()));
                 }
             }
@@ -214,6 +215,7 @@ public class BoxOfficeCrawlerOrchestrator implements Runnable {
                 } catch (Exception e) {
                     lastRequestAt = System.currentTimeMillis();
                     errors++;
+                    db.rollback();
                     logErr(String.format("[Koimoi] Error for '%s' (%s): %s", name, year, e.getMessage()));
                 }
             }

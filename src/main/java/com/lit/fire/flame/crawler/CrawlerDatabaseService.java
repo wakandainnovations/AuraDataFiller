@@ -147,9 +147,11 @@ public class CrawlerDatabaseService implements AutoCloseable {
      *                       is already valid and is left untouched
      *   runtime           – set when current value is 0 or NULL and sacnilk has a value
      *   genre             – set when current value is NULL or empty
-     *   language          – set when current value is NULL, empty, or "Unknown"
      *   rating_10         – set when current value is 0 or NULL and sacnilk has a value
      *   status            – set when current value is NULL or empty
+     *
+     * NOTE: language is intentionally excluded — it is part of the PK and sacnilk returns
+     * multi-valued strings (e.g. "Hindi, Tamil, Telugu") that must not overwrite it.
      *
      * @return number of rows updated
      */
@@ -169,10 +171,6 @@ public class CrawlerDatabaseService implements AutoCloseable {
             "  \"genre\"     = CASE WHEN ? IS NOT NULL AND ? <> ''" +
             "                       AND (\"genre\" IS NULL OR \"genre\" = '')" +
             "                  THEN ? ELSE \"genre\" END," +
-            "  \"language\"  = CASE WHEN ? IS NOT NULL AND ? <> ''" +
-            "                       AND (\"language\" IS NULL OR \"language\" = ''" +
-            "                            OR \"language\" = 'Unknown')" +
-            "                  THEN ? ELSE \"language\" END," +
             "  \"rating_10\" = CASE WHEN ? IS NOT NULL" +
             "                       AND COALESCE(\"rating_10\", 0) = 0" +
             "                  THEN ? ELSE \"rating_10\" END," +
@@ -197,10 +195,6 @@ public class CrawlerDatabaseService implements AutoCloseable {
             setStringOrNull(ps, i++, genre);
             setStringOrNull(ps, i++, genre);
             setStringOrNull(ps, i++, genre);
-            // language (TEXT, appears three times)
-            setStringOrNull(ps, i++, language);
-            setStringOrNull(ps, i++, language);
-            setStringOrNull(ps, i++, language);
             // rating_10 (NUMERIC, appears twice)
             setDoubleOrNull(ps, i++, rating);
             setDoubleOrNull(ps, i++, rating);
@@ -334,6 +328,13 @@ public class CrawlerDatabaseService implements AutoCloseable {
 
     private String q(String identifier) {
         return "\"" + identifier.replace("\"", "\"\"") + "\"";
+    }
+
+    /** Rolls back the current transaction; suppresses the exception so callers stay clean. */
+    public void rollback() {
+        try {
+            connection.rollback();
+        } catch (SQLException ignored) {}
     }
 
     @Override
