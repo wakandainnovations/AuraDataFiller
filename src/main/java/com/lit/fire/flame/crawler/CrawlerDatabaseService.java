@@ -74,6 +74,33 @@ public class CrawlerDatabaseService implements AutoCloseable {
     }
 
     /**
+     * Returns distinct (movie_name, year, release_date) for entries where
+     * revenue or budget is still 0 (unfilled default). Used by secondary crawlers
+     * (BOM, Koimoi) to skip movies that sacnilk already enriched.
+     */
+    public List<String[]> getMoviesMissingBoxOffice() throws SQLException {
+        List<String[]> result = new ArrayList<>();
+        String sql = "SELECT movie_name, LEFT(release_date, 4) AS yr, MIN(release_date) AS release_date " +
+            "FROM " + q(tableName) +
+            " WHERE release_date IS NOT NULL AND LENGTH(release_date) >= 4 " +
+            "  AND (COALESCE(\"revenue\", 0) = 0 OR COALESCE(\"budget\", 0) = 0) " +
+            "GROUP BY movie_name, LEFT(release_date, 4) " +
+            "ORDER BY yr, movie_name";
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs   = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                String name        = rs.getString("movie_name");
+                String yr          = rs.getString("yr");
+                String releaseDate = rs.getString("release_date");
+                if (name != null && yr != null && yr.matches("\\d{4}")) {
+                    result.add(new String[]{name, yr, releaseDate});
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
      * Updates revenue and/or budget (both in full USD) for every row whose
      * movie_name matches and whose release_date starts with the given year.
      *
@@ -86,6 +113,33 @@ public class CrawlerDatabaseService implements AutoCloseable {
                                 Long revenueUsd, Long budgetUsd) throws SQLException {
         String sql = "UPDATE " + q(tableName) +
             " SET \"revenue\" = COALESCE(?, \"revenue\"), \"budget\" = COALESCE(?, \"budget\")" +
+            " WHERE \"movie_name\" = ? AND LEFT(\"release_date\", 4) = ?";
+        int updated;
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setObject(1, revenueUsd);
+            ps.setObject(2, budgetUsd);
+            ps.setString(3, movieName);
+            ps.setString(4, year);
+            updated = ps.executeUpdate();
+        }
+        connection.commit();
+        return updated;
+    }
+
+    /**
+     * Like updateBoxOffice but only writes a column when it currently holds 0.
+     * Used by secondary crawlers (BOM, Koimoi) to avoid overwriting data already
+     * set by a higher-priority source.
+     *
+     * @return number of rows touched (rows where at least one column was updated)
+     */
+    public int updateBoxOfficeIfMissing(String movieName, String year,
+                                         Long revenueUsd, Long budgetUsd) throws SQLException {
+        String sql = "UPDATE " + q(tableName) +
+            " SET \"revenue\" = CASE WHEN COALESCE(\"revenue\", 0) = 0" +
+            "                       THEN COALESCE(?, \"revenue\") ELSE \"revenue\" END," +
+            "     \"budget\"  = CASE WHEN COALESCE(\"budget\",  0) = 0" +
+            "                       THEN COALESCE(?, \"budget\")  ELSE \"budget\"  END" +
             " WHERE \"movie_name\" = ? AND LEFT(\"release_date\", 4) = ?";
         int updated;
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
