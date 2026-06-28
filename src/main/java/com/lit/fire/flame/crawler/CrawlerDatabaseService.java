@@ -74,36 +74,23 @@ public class CrawlerDatabaseService implements AutoCloseable {
      * Updates revenue and/or budget for every row whose movie_name matches
      * and whose release_date starts with the given year.
      *
-     * Only non-null values are written; the other column is left unchanged.
+     * Only non-null values are written; the other column is left unchanged via COALESCE.
      *
-     * @return number of rows updated (based on revenue update; budget update may be higher/lower)
+     * @return number of rows updated
      */
     public int updateBoxOffice(String movieName, String year,
                                 Double worldwideCr, Double budgetCr) throws SQLException {
-        int updated = 0;
-
-        if (worldwideCr != null) {
-            String sql = "UPDATE " + q(tableName) + " SET \"revenue\" = ? " +
-                "WHERE \"movie_name\" = ? AND LEFT(\"release_date\", 4) = ?";
-            try (PreparedStatement ps = connection.prepareStatement(sql)) {
-                ps.setBigDecimal(1, BigDecimal.valueOf(worldwideCr));
-                ps.setString(2, movieName);
-                ps.setString(3, year);
-                updated = ps.executeUpdate();
-            }
+        String sql = "UPDATE " + q(tableName) +
+            " SET \"revenue\" = COALESCE(?, \"revenue\"), \"budget\" = COALESCE(?, \"budget\")" +
+            " WHERE \"movie_name\" = ? AND LEFT(\"release_date\", 4) = ?";
+        int updated;
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setObject(1, worldwideCr != null ? BigDecimal.valueOf(worldwideCr) : null);
+            ps.setObject(2, budgetCr    != null ? BigDecimal.valueOf(budgetCr)    : null);
+            ps.setString(3, movieName);
+            ps.setString(4, year);
+            updated = ps.executeUpdate();
         }
-
-        if (budgetCr != null) {
-            String sql = "UPDATE " + q(tableName) + " SET \"budget\" = ? " +
-                "WHERE \"movie_name\" = ? AND LEFT(\"release_date\", 4) = ?";
-            try (PreparedStatement ps = connection.prepareStatement(sql)) {
-                ps.setBigDecimal(1, BigDecimal.valueOf(budgetCr));
-                ps.setString(2, movieName);
-                ps.setString(3, year);
-                ps.executeUpdate();
-            }
-        }
-
         connection.commit();
         return updated;
     }
