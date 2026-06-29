@@ -19,8 +19,16 @@ public class App {
             // sacnilk only (single-source, legacy behaviour).
             new SacnilkCrawlerService().runOnce();
         } else if ("--actor-scan".equals(args[0])) {
-            // Scan actor CSVs and populate actors_data_collection (one shot, then exit).
-            new ActorDataCollectionService().runOnce();
+            // Scan actor CSVs and populate actors_data_collection, then repeat every 24 h.
+            new ActorDataCollectionService().run();
+        } else if ("--actor-filmography".equals(args[0])) {
+            if (args.length < 2) {
+                System.err.println("--actor-filmography requires an actor name.");
+                printUsage();
+                System.exit(1);
+            }
+            String upToYear = args.length >= 3 ? args[2] : null;
+            new ActorDataCollectionService().printFilmography(args[1], upToYear);
         } else if ("--watch".equals(args[0])) {
             startDaemonCrawler();
             startDaemonActorCollector();
@@ -65,6 +73,7 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --watch <folder-path>     # process existing + watch for new files");
         System.err.println("  java -jar AuraDataFiller.jar --crawl                   # run one multi-source cycle (sacnilk + BOM + koimoi) and exit");
         System.err.println("  java -jar AuraDataFiller.jar --crawl-sacnilk           # run one sacnilk-only crawl cycle and exit");
-        System.err.println("  java -jar AuraDataFiller.jar --actor-scan              # scan actor CSVs and update actors_data_collection, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --actor-scan                           # scan actor CSVs, update actors_data_collection, repeat every 24 h");
+        System.err.println("  java -jar AuraDataFiller.jar --actor-filmography \"Actor Name\" [YYYY] # print actor's filmography (optionally up to a given year)");
     }
 }

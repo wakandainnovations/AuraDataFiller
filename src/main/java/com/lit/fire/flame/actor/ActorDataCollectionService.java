@@ -143,35 +143,99 @@ public class ActorDataCollectionService implements Runnable {
     }
 
     /**
-     * Runs one scan cycle synchronously (for --actor-scan CLI flag).
+     * Prints an actor's full filmography to stdout, grouped and sorted by year.
+     * Usage: --actor-filmography "Actor Name"
+     * Also supports optional upper-year bound: --actor-filmography "Actor Name" 2020
      */
-    public void runOnce() throws Exception {
+    public void printFilmography(String actorName, String upToYear) throws Exception {
         Properties secrets = loadProperties("secrets.properties", true);
-        Properties config  = loadProperties("application.properties", false);
-
-        String scanFolder  = config.getProperty(
-            "actor.collector.folder",
-            "/Users/mukundv/Documents/work/space/actor_data_collection");
-        String moviesTable = config.getProperty("table.name", "movies_data_collection");
-
         String dbUrl  = secrets.getProperty("db.url");
         String dbUser = secrets.getProperty("db.user");
         String dbPass = secrets.getProperty("db.password", "");
 
-        log("=== Starting actor data collection (one-shot) ===");
-        log("Scanning folder: " + scanFolder);
         try (Connection conn = DriverManager.getConnection(dbUrl, dbUser, dbPass)) {
-            conn.setAutoCommit(false);
-            ensureTableExists(conn);
-            List<Path> csvFiles = listCsvFiles(scanFolder);
-            log(String.format("Found %d CSV file(s).", csvFiles.size()));
-            for (Path csv : csvFiles) {
-                log("Processing: " + csv.getFileName());
-                processFile(conn, csv);
+            // Check table exists
+            String checkSql =
+                "SELECT 1 FROM information_schema.tables " +
+                "WHERE table_schema='public' AND table_name=?";
+            try (PreparedStatement ps = conn.prepareStatement(checkSql)) {
+                ps.setString(1, TABLE_NAME);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        System.out.println("Table '" + TABLE_NAME + "' does not exist yet. Run --actor-scan first.");
+                        return;
+                    }
+                }
             }
-            enrichLanguageFromMoviesTable(conn, moviesTable);
+
+            String sql =
+                "SELECT movie_name, release_date, language, genre, director, rating, role_position " +
+                "FROM " + q(TABLE_NAME) + " " +
+                "WHERE lower(trim(actor_name)) = lower(trim(?)) " +
+                (upToYear != null ? "  AND left(release_date, 4) <= ? " : "") +
+                "ORDER BY release_date, movie_name";
+
+            List<String[]> rows = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, actorName);
+                if (upToYear != null) ps.setString(2, upToYear);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        rows.add(new String[]{
+                            rs.getString("movie_name"),
+                            rs.getString("release_date"),
+                            rs.getString("language"),
+                            rs.getString("genre"),
+                            rs.getString("director"),
+                            rs.getString("rating"),
+                            rs.getString("role_position")
+                        });
+                    }
+                }
+            }
+
+            if (rows.isEmpty()) {
+                System.out.printf("No filmography found for '%s'%s.%n",
+                    actorName, upToYear != null ? " up to " + upToYear : "");
+                return;
+            }
+
+            String header = upToYear != null
+                ? String.format("Filmography of '%s' up to %s (%d film(s)):", actorName, upToYear, rows.size())
+                : String.format("Filmography of '%s' (%d film(s)):", actorName, rows.size());
+            System.out.println(header);
+            System.out.println("=".repeat(header.length()));
+
+            String currentYear = null;
+            for (String[] r : rows) {
+                String year = r[1] != null ? r[1].substring(0, Math.min(4, r[1].length())) : "Unknown";
+                if (!year.equals(currentYear)) {
+                    System.out.println();
+                    System.out.println("  " + year);
+                    System.out.println("  " + "-".repeat(4));
+                    currentYear = year;
+                }
+                String movie    = nvl(r[0], "?");
+                String lang     = nvl(r[2], "");
+                String genre    = nvl(r[3], "");
+                String director = nvl(r[4], "");
+                String rating   = r[5] != null ? "★ " + r[5] : "";
+                String pos      = r[6] != null ? " [Actor " + r[6] + "]" : "";
+
+                StringBuilder line = new StringBuilder("    • ").append(movie).append(pos);
+                if (!lang.isEmpty())     line.append("  |  ").append(lang);
+                if (!genre.isEmpty())    line.append("  |  ").append(genre);
+                if (!director.isEmpty()) line.append("  |  dir. ").append(director);
+                if (!rating.isEmpty())   line.append("  |  ").append(rating);
+                System.out.println(line);
+            }
+            System.out.println();
+            System.out.printf("Total: %d film(s).%n", rows.size());
         }
-        log("=== Done. ===");
+    }
+
+    private static String nvl(String s, String fallback) {
+        return (s == null || s.isBlank()) ? fallback : s.trim();
     }
 
     // ---- table setup ----
