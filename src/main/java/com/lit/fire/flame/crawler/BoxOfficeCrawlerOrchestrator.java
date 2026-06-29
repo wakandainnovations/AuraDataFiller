@@ -166,7 +166,7 @@ public class BoxOfficeCrawlerOrchestrator implements Runnable {
 
     private void runKoimoiCycle(String dbUrl, String dbUser, String dbPassword,
                                  String tableName, long delayMs, double threshold) throws Exception {
-        List<String[]> missing = loadMissing(dbUrl, dbUser, dbPassword, tableName, "[Koimoi]");
+        List<String[]> missing = loadMissingIndian(dbUrl, dbUser, dbPassword, tableName);
         if (missing == null || missing.isEmpty()) return;
 
         KoimoiParser       parser       = new KoimoiParser();
@@ -256,6 +256,19 @@ public class BoxOfficeCrawlerOrchestrator implements Runnable {
             }
             List<String[]> missing = db.getMoviesMissingBoxOffice();
             log(String.format("%s %d movie(s) still missing box office data.", tag, missing.size()));
+            return missing;
+        }
+    }
+
+    private List<String[]> loadMissingIndian(String dbUrl, String dbUser, String dbPassword,
+                                              String tableName) throws Exception {
+        try (CrawlerDatabaseService db = new CrawlerDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
+            if (!db.tableExists()) {
+                log("[Koimoi] Table not found — skipping.");
+                return null;
+            }
+            List<String[]> missing = db.getMoviesMissingBoxOfficeIndian();
+            log(String.format("[Koimoi] %d Indian-language movie(s) still missing box office data.", missing.size()));
             return missing;
         }
     }

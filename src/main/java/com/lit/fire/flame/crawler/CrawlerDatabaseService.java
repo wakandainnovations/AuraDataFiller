@@ -89,14 +89,35 @@ public class CrawlerDatabaseService implements AutoCloseable {
      * Returns distinct (movie_name, year, release_date) for entries where
      * revenue or budget is still 0 (unfilled default). Used by secondary crawlers
      * (BOM, Koimoi) to skip movies that sacnilk already enriched.
+     * Scoped to post-1980 releases to avoid wasting time on historical films.
      */
     public List<String[]> getMoviesMissingBoxOffice() throws SQLException {
+        return queryMissingBoxOffice(false);
+    }
+
+    /**
+     * Like getMoviesMissingBoxOffice but restricted to Indian-language films.
+     * Koimoi only covers Indian cinema, so crawling non-Indian entries is pointless.
+     */
+    public List<String[]> getMoviesMissingBoxOfficeIndian() throws SQLException {
+        return queryMissingBoxOffice(true);
+    }
+
+    private List<String[]> queryMissingBoxOffice(boolean indianOnly) throws SQLException {
+        String languageFilter = indianOnly
+            ? " AND LOWER(\"language\") IN (" +
+              "'hindi','tamil','telugu','malayalam','kannada','bengali'," +
+              "'marathi','punjabi','gujarati','odia','oriya','urdu'," +
+              "'assamese','bhojpuri','nepali','rajasthani','rajastani'," +
+              "'tulu','sanskrit','konkani','kashmiri') "
+            : "";
         List<String[]> result = new ArrayList<>();
         String sql = "SELECT movie_name, LEFT(release_date, 4) AS yr, MIN(release_date) AS release_date " +
             "FROM " + q(tableName) +
             " WHERE release_date IS NOT NULL AND LENGTH(release_date) >= 4 " +
             "  AND LEFT(release_date, 4) >= '1980' " +
             "  AND (COALESCE(\"revenue\", 0) = 0 OR COALESCE(\"budget\", 0) = 0) " +
+            languageFilter +
             "GROUP BY movie_name, LEFT(release_date, 4) " +
             "ORDER BY yr, movie_name";
         try (Statement stmt = connection.createStatement();
