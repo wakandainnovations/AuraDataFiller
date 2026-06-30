@@ -23,7 +23,11 @@ if [ "${1:-}" = "--actor-filmography" ]; then
         echo "Usage: $0 --actor-filmography \"Actor Name\" [YYYY]" >&2
         exit 1
     fi
-    java -jar "$JAR" --actor-filmography "${2}" "${3:-}"
+    if [ -n "${3:-}" ]; then
+        java -jar "$JAR" --actor-filmography "${2}" "${3}"
+    else
+        java -jar "$JAR" --actor-filmography "${2}"
+    fi
     exit 0
 fi
 

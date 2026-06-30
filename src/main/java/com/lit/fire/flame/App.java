@@ -27,7 +27,7 @@ public class App {
                 printUsage();
                 System.exit(1);
             }
-            String upToYear = args.length >= 3 ? args[2] : null;
+            String upToYear = args.length >= 3 && !args[2].isBlank() ? args[2] : null;
             new ActorDataCollectionService().printFilmography(args[1], upToYear);
         } else if ("--watch".equals(args[0])) {
             startDaemonCrawler();
