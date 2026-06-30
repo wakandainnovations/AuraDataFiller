@@ -110,6 +110,13 @@ public class ActorDataCollectionService implements Runnable {
         String dbUser = secrets.getProperty("db.user");
         String dbPass = secrets.getProperty("db.password", "");
 
+        // Start sacnilk actor filmography crawler in parallel (daemon so it dies with the JVM)
+        Thread sacnilkCrawler = new Thread(new SacnilkActorCrawlerService(), "sacnilk-actor-crawler");
+        sacnilkCrawler.setDaemon(true);
+        sacnilkCrawler.start();
+        log("Sacnilk actor crawler started in parallel (initial delay: "
+            + config.getProperty("actor.crawler.initial.delay.ms", "30000") + " ms).");
+
         sleep(initialDelayMs, "initial startup delay");
 
         while (!Thread.currentThread().isInterrupted()) {
@@ -256,6 +263,8 @@ public class ActorDataCollectionService implements Runnable {
             "  \"character_name\"     TEXT DEFAULT NULL, " +
             "  \"awards\"             TEXT DEFAULT NULL, " +
             "  \"streaming_platform\" TEXT DEFAULT NULL, " +
+            "  \"status\"             TEXT DEFAULT NULL, " +
+            "  \"sacnilk_url\"        TEXT DEFAULT NULL, " +
             "  PRIMARY KEY (\"actor_name\", \"movie_name\", \"release_date\")" +
             ")";
         try (Statement stmt = conn.createStatement()) {
