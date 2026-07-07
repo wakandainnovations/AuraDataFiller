@@ -2,6 +2,7 @@ package com.lit.fire.flame;
 
 import com.lit.fire.flame.actor.ActorDataCollectionService;
 import com.lit.fire.flame.actor.SacnilkActorCrawlerService;
+import com.lit.fire.flame.actor.SupplementalActorCrawlerService;
 import com.lit.fire.flame.crawler.BoxOfficeCrawlerOrchestrator;
 import com.lit.fire.flame.crawler.SacnilkCrawlerService;
 
@@ -26,6 +27,9 @@ public class App {
         } else if ("--actor-crawl".equals(args[0])) {
             // Run one sacnilk actor filmography crawl cycle and exit.
             new SacnilkActorCrawlerService().runOnce();
+        } else if ("--actor-crawl-supplemental".equals(args[0])) {
+            // Run one kulfiy/fandango supplemental actor crawl cycle and exit.
+            new SupplementalActorCrawlerService().runOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -81,5 +85,6 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --actor-scan                           # scan actor CSVs, update actors_data_collection, repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --actor-filmography \"Actor Name\" [YYYY] # print actor's filmography (optionally up to a given year)");
         System.err.println("  java -jar AuraDataFiller.jar --actor-crawl                           # run one sacnilk actor filmography crawl cycle and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --actor-crawl-supplemental              # run one kulfiy/fandango supplemental actor crawl cycle and exit");
     }
 }

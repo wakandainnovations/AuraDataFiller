@@ -117,6 +117,14 @@ public class ActorDataCollectionService implements Runnable {
         log("Sacnilk actor crawler started in parallel (initial delay: "
             + config.getProperty("actor.crawler.initial.delay.ms", "30000") + " ms).");
 
+        // Start supplemental (kulfiy/fandango) actor crawler in parallel — covers south
+        // Indian movies sacnilk may have missed. Also daemon so it dies with the JVM.
+        Thread supplementalCrawler = new Thread(new SupplementalActorCrawlerService(), "supplemental-actor-crawler");
+        supplementalCrawler.setDaemon(true);
+        supplementalCrawler.start();
+        log("Supplemental actor crawler (kulfiy/fandango) started in parallel (initial delay: "
+            + config.getProperty("actor.crawler.supplemental.initial.delay.ms", "45000") + " ms).");
+
         sleep(initialDelayMs, "initial startup delay");
 
         while (!Thread.currentThread().isInterrupted()) {
