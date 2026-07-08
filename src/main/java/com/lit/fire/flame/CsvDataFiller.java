@@ -1,14 +1,18 @@
 package com.lit.fire.flame;
 
+import com.lit.fire.flame.crawler.CrawlerDatabaseService;
+import com.lit.fire.flame.crawler.ExchangeRateService;
 import com.lit.fire.flame.csv.CsvData;
 import com.lit.fire.flame.csv.CsvParser;
 import com.lit.fire.flame.db.DatabaseService;
+import com.lit.fire.flame.description.DescriptionParser;
 import com.lit.fire.flame.enrichment.EnrichmentResult;
 import com.lit.fire.flame.enrichment.EnrichmentService;
 import com.lit.fire.flame.mapper.ColumnMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.time.format.TextStyle;
@@ -30,6 +34,8 @@ public class CsvDataFiller {
             appConfig.getProperty("fuzzy.warn.threshold", "0.75"));
         int fuzzyMaxPairs = Integer.parseInt(
             appConfig.getProperty("fuzzy.max.pairs", "50000"));
+        boolean descriptionFinanceEnabled = Boolean.parseBoolean(
+            appConfig.getProperty("description.finance.enrichment.enabled", "true"));
 
         System.out.println("=== AuraDataFiller ===");
         System.out.println("Source : " + filePath);
@@ -140,6 +146,11 @@ public class CsvDataFiller {
             System.out.println("Starting import...");
             db.batchUpsert(csvData, csvToDb, existingCols, autoMergeMap);
 
+            if (descriptionFinanceEnabled) {
+                enrichFinanceFromDescriptions(csvData, mapper, db, autoMergeMap,
+                    movieNameHeader, releaseDateHeader, secrets, tableName);
+            }
+
         } catch (Exception e) {
             System.err.println("Import failed: " + e.getMessage());
             e.printStackTrace();
@@ -238,6 +249,144 @@ public class CsvDataFiller {
         }
 
         return new CsvData(List.copyOf(headers), csvData.rows());
+    }
+
+    /**
+     * Parses the free-text "Description" column (IMDb list exports pack budget / worldwide
+     * gross / verdict etc. into it, e.g. "Budget : 300crWorldwide gross : 1152cr...") and
+     * updates the matching DB row(s) via {@link DatabaseService#updateFinanceGreatest}.
+     *
+     * Matching is by movie_name + release year (not the exact PK), so it reaches rows
+     * inserted by other sources (e.g. the sacnilk crawler) regardless of language/date-format
+     * differences — same convention {@code CrawlerDatabaseService} already uses.
+     * INR crore figures are converted to USD using the exchange rate on the movie's release
+     * date (or 1 July of its release year when only the year is known); figures already in
+     * USD (a bare "$..." or an accompanying "US$..."/"...USD" figure) are used as-is.
+     */
+    private void enrichFinanceFromDescriptions(CsvData csvData, ColumnMapper mapper, DatabaseService db,
+                                                Map<String, String> autoMergeMap,
+                                                String movieNameHeader, String releaseDateHeader,
+                                                Properties secrets, String tableName) throws Exception {
+        String descHeader = findHeaderIgnoreCase(csvData.headers(), "description");
+        if (descHeader == null || movieNameHeader == null) return;
+
+        String yearHeader     = findHeaderIgnoreCase(csvData.headers(), "year");
+        String fullDateHeader = findHeaderIgnoreCase(csvData.headers(), "release date");
+
+        System.out.println("Parsing box-office figures out of the Description column...");
+        db.ensureFinanceColumns();
+
+        DescriptionParser parser = new DescriptionParser();
+        String url      = secrets.getProperty("db.url");
+        String user     = secrets.getProperty("db.user");
+        String password = secrets.getProperty("db.password", "");
+
+        long updated = 0, noData = 0, noMatch = 0, errors = 0;
+
+        try (CrawlerDatabaseService rateDb = new CrawlerDatabaseService(url, user, password, tableName)) {
+            rateDb.ensureRateTableExists();
+            ExchangeRateService exchangeRate = new ExchangeRateService();
+            exchangeRate.preloadCache(rateDb.getExistingRates("INR", "USD"));
+
+            for (Map<String, String> row : csvData.rows()) {
+                String desc = row.get(descHeader);
+                if (desc == null || desc.isBlank()) { noData++; continue; }
+
+                String movieName = mapper.sanitizeValue(row.get(movieNameHeader), "text");
+                if (movieName == null) { noData++; continue; }
+
+                String year = yearHeader != null ? extractYear(row.get(yearHeader)) : null;
+                if (year == null && fullDateHeader != null) year = extractYear(row.get(fullDateHeader));
+                if (year == null) { noData++; continue; }
+
+                String fullDate = fullDateHeader != null ? row.get(fullDateHeader) : null;
+                String rateDate = isValidIsoDate(fullDate) ? fullDate.trim().substring(0, 10) : (year + "-07-01");
+
+                // Apply the same fuzzy-merge normalisation batchUpsert used, so we update the
+                // exact row(s) the CSV import just touched.
+                String mergeDateKey = releaseDateHeader != null
+                    ? mapper.sanitizeValue(row.get(releaseDateHeader), "text") : year;
+                if (mergeDateKey != null) {
+                    String normalised = autoMergeMap.get(DatabaseService.mergeKey(movieName, mergeDateKey));
+                    if (normalised != null) movieName = normalised;
+                }
+
+                DescriptionParser.ParsedDescription parsed = parser.parse(desc);
+                if (parsed.amounts().isEmpty() && parsed.verdict() == null && parsed.note() == null) {
+                    noData++;
+                    continue;
+                }
+
+                Map<DescriptionParser.Field, Long> usdAmounts = new EnumMap<>(DescriptionParser.Field.class);
+                Double rate = null;
+                boolean rateFetchFailed = false;
+
+                for (Map.Entry<DescriptionParser.Field, DescriptionParser.Amount> e : parsed.amounts().entrySet()) {
+                    DescriptionParser.Amount amount = e.getValue();
+                    if (amount.isUsd()) {
+                        usdAmounts.put(e.getKey(), amount.value().setScale(0, RoundingMode.HALF_UP).longValueExact());
+                        continue;
+                    }
+                    if (rate == null && !rateFetchFailed) {
+                        try {
+                            rate = exchangeRate.getInrToUsdRate(rateDate);
+                        } catch (Exception ex) {
+                            rateFetchFailed = true;
+                            System.err.printf("  Warning: exchange rate lookup failed for %s ('%s'): %s%n",
+                                rateDate, movieName, ex.getMessage());
+                        }
+                    }
+                    if (rate != null) {
+                        usdAmounts.put(e.getKey(), exchangeRate.inrCroreToUsd(amount.value().doubleValue(), rate));
+                    }
+                }
+
+                if (usdAmounts.isEmpty() && parsed.verdict() == null && parsed.note() == null) {
+                    noData++;
+                    continue;
+                }
+
+                try {
+                    int rows = db.updateFinanceGreatest(movieName, year, usdAmounts, parsed.verdict(), parsed.note());
+                    if (rows > 0) updated++; else noMatch++;
+                } catch (Exception ex) {
+                    errors++;
+                    System.err.printf("  Warning: finance update failed for '%s' (%s): %s%n",
+                        movieName, year, ex.getMessage());
+                }
+            }
+
+            for (Map.Entry<String, Double> e : exchangeRate.getNewlyFetchedRates().entrySet()) {
+                rateDb.upsertExchangeRate(e.getKey(), "INR", "USD", e.getValue());
+            }
+        }
+
+        System.out.printf(
+            "Description finance enrichment done — updated: %,d | no box-office data: %,d | no DB match: %,d | errors: %,d%n%n",
+            updated, noData, noMatch, errors);
+    }
+
+    private String findHeaderIgnoreCase(List<String> headers, String target) {
+        return headers.stream().filter(h -> h.equalsIgnoreCase(target)).findFirst().orElse(null);
+    }
+
+    /** Returns the leading 4-digit year from a value like "2016" or "2016-09-29", else null. */
+    private String extractYear(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        if (trimmed.length() < 4) return null;
+        String candidate = trimmed.substring(0, 4);
+        return candidate.matches("\\d{4}") ? candidate : null;
+    }
+
+    private boolean isValidIsoDate(String value) {
+        if (value == null || value.trim().length() < 10) return false;
+        try {
+            LocalDate.parse(value.trim().substring(0, 10));
+            return true;
+        } catch (DateTimeParseException e) {
+            return false;
+        }
     }
 
     private EnrichmentService createEnrichmentService(Properties secrets, Properties appConfig) {
