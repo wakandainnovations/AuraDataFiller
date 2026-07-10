@@ -48,8 +48,9 @@ public class App {
             }
             new FolderWatcher(args[1]).watch();
         } else if ("--batch".equals(args[0])) {
-            startDaemonCrawler();
-            startDaemonActorCollector();
+            // One-shot: process existing CSVs and exit. Background services are daemon
+            // threads and would be killed by the JVM before completing a cycle here, so
+            // they are only started in --watch, which stays resident.
             if (args.length < 2) {
                 System.err.println("--batch requires a folder path.");
                 printUsage();
@@ -57,8 +58,7 @@ public class App {
             }
             new FolderWatcher(args[1]).runBatch();
         } else {
-            startDaemonCrawler();
-            startDaemonActorCollector();
+            // One-shot: process a single CSV and exit — see note above.
             new CsvDataFiller().process(args[0]);
         }
     }

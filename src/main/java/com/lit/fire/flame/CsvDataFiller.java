@@ -203,11 +203,12 @@ public class CsvDataFiller {
      */
     private CsvData enrichRows(CsvData csvData, ColumnMapper mapper, EnrichmentService enrichmentService) {
         // Locate the CSV headers for the fields we need
-        String releaseDateHeader = null, languageHeader = null, countryHeader = null;
+        String languageHeader = null, countryHeader = null;
+        List<String> releaseDateCandidates = new ArrayList<>();
 
         for (String h : csvData.headers()) {
             String dbCol = mapper.toDbColumnName(h);
-            if (ColumnMapper.RELEASE_DATE_COL.equals(dbCol) && releaseDateHeader == null) releaseDateHeader = h;
+            if (ColumnMapper.RELEASE_DATE_COL.equals(dbCol))                       releaseDateCandidates.add(h);
             if ("language".equals(dbCol)                    && languageHeader == null)    languageHeader   = h;
             // Accept "country", "production_countries", or "country_of_origin"
             if ((h.toLowerCase().contains("country") || h.equalsIgnoreCase("production_countries"))
@@ -215,6 +216,11 @@ public class CsvDataFiller {
                 countryHeader = h;
             }
         }
+        // Several headers can map to release_date (e.g. both "Year" and "Release Date"). Prefer an
+        // explicit "Release Date" column — it carries a full YYYY-MM-DD, which event detection needs —
+        // ahead of the rest, but fall back per-row to another candidate (e.g. "Year") when the
+        // preferred column is blank for that particular row.
+        releaseDateCandidates.sort(Comparator.comparing(h -> !h.equalsIgnoreCase("release date")));
 
         // Append enrichment headers that are not already present
         List<String> headers = new ArrayList<>(csvData.headers());
@@ -230,7 +236,11 @@ public class CsvDataFiller {
         long total = csvData.rows().size();
         long count = 0;
         for (Map<String, String> row : csvData.rows()) {
-            String releaseDate = releaseDateHeader != null ? row.get(releaseDateHeader) : null;
+            String releaseDate = releaseDateCandidates.stream()
+                .map(row::get)
+                .filter(v -> v != null && !v.isBlank())
+                .findFirst()
+                .orElse(null);
             String language    = languageHeader    != null ? row.get(languageHeader)    : null;
             String country     = countryHeader     != null ? row.get(countryHeader)     : null;
 
