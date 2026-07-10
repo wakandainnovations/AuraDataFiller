@@ -5,6 +5,7 @@ import com.lit.fire.flame.actor.SacnilkActorCrawlerService;
 import com.lit.fire.flame.actor.SupplementalActorCrawlerService;
 import com.lit.fire.flame.crawler.BoxOfficeCrawlerOrchestrator;
 import com.lit.fire.flame.crawler.SacnilkCrawlerService;
+import com.lit.fire.flame.youtube.YoutubeEnrichmentService;
 
 public class App {
 
@@ -30,6 +31,22 @@ public class App {
         } else if ("--actor-crawl-supplemental".equals(args[0])) {
             // Run one kulfiy/fandango supplemental actor crawl cycle and exit.
             new SupplementalActorCrawlerService().runOnce();
+        } else if ("--youtube-scan".equals(args[0])) {
+            // Search YouTube for trailer/teaser/first-song videos of movies released after
+            // 2010 and populate promo-metrics columns, then repeat every 24 h.
+            new YoutubeEnrichmentService().run();
+        } else if ("--youtube-scan-once".equals(args[0])) {
+            // Run one YouTube enrichment cycle and exit.
+            new YoutubeEnrichmentService().runOnce();
+        } else if ("--youtube-scan-movie".equals(args[0])) {
+            // Run enrichment for exactly one (movie_name, year) and exit. For spot-checking
+            // a real API key/match quality without scanning the whole candidate backlog.
+            if (args.length < 3) {
+                System.err.println("--youtube-scan-movie requires a movie name and a 4-digit year.");
+                printUsage();
+                System.exit(1);
+            }
+            new YoutubeEnrichmentService().runOnceForMovie(args[1], args[2]);
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -41,6 +58,7 @@ public class App {
         } else if ("--watch".equals(args[0])) {
             startDaemonCrawler();
             startDaemonActorCollector();
+            startDaemonYoutubeService();
             if (args.length < 2) {
                 System.err.println("--watch requires a folder path.");
                 printUsage();
@@ -75,6 +93,12 @@ public class App {
         t.start();
     }
 
+    private static void startDaemonYoutubeService() {
+        Thread t = new Thread(new YoutubeEnrichmentService(), "youtube-enrichment");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static void printUsage() {
         System.err.println("Usage:");
         System.err.println("  java -jar AuraDataFiller.jar <path-to-csv-file>");
@@ -86,5 +110,8 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --actor-filmography \"Actor Name\" [YYYY] # print actor's filmography (optionally up to a given year)");
         System.err.println("  java -jar AuraDataFiller.jar --actor-crawl                           # run one sacnilk actor filmography crawl cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --actor-crawl-supplemental              # run one kulfiy/fandango supplemental actor crawl cycle and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --youtube-scan                          # search YouTube for trailer/teaser/song data, repeat every 24 h");
+        System.err.println("  java -jar AuraDataFiller.jar --youtube-scan-once                     # run one YouTube enrichment cycle and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --youtube-scan-movie \"Movie Name\" YYYY  # test enrichment for one movie and exit");
     }
 }
