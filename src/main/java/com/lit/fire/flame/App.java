@@ -5,6 +5,7 @@ import com.lit.fire.flame.actor.SacnilkActorCrawlerService;
 import com.lit.fire.flame.actor.SupplementalActorCrawlerService;
 import com.lit.fire.flame.crawler.BoxOfficeCrawlerOrchestrator;
 import com.lit.fire.flame.crawler.SacnilkCrawlerService;
+import com.lit.fire.flame.synopsis.SynopsisCrawlerService;
 import com.lit.fire.flame.youtube.YoutubeEnrichmentService;
 
 public class App {
@@ -47,6 +48,14 @@ public class App {
                 System.exit(1);
             }
             new YoutubeEnrichmentService().runOnceForMovie(args[1], args[2]);
+        } else if ("--synopsis-scan".equals(args[0])) {
+            // Fill the "synopsis" column (boxofficemojo.com, then sacnilk.com fallback) for
+            // movies released after 1980 up to today, most recently released first, then
+            // repeat every 24 h.
+            new SynopsisCrawlerService().run();
+        } else if ("--synopsis-scan-once".equals(args[0])) {
+            // Run one synopsis enrichment cycle and exit.
+            new SynopsisCrawlerService().runOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -59,6 +68,7 @@ public class App {
             startDaemonCrawler();
             startDaemonActorCollector();
             startDaemonYoutubeService();
+            startDaemonSynopsisService();
             if (args.length < 2) {
                 System.err.println("--watch requires a folder path.");
                 printUsage();
@@ -99,6 +109,12 @@ public class App {
         t.start();
     }
 
+    private static void startDaemonSynopsisService() {
+        Thread t = new Thread(new SynopsisCrawlerService(), "synopsis-crawler");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static void printUsage() {
         System.err.println("Usage:");
         System.err.println("  java -jar AuraDataFiller.jar <path-to-csv-file>");
@@ -113,5 +129,7 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --youtube-scan                          # search YouTube for trailer/teaser/song data, repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --youtube-scan-once                     # run one YouTube enrichment cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --youtube-scan-movie \"Movie Name\" YYYY  # test enrichment for one movie and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --synopsis-scan                        # fill synopsis column (boxofficemojo.com + sacnilk.com), repeat every 24 h");
+        System.err.println("  java -jar AuraDataFiller.jar --synopsis-scan-once                    # run one synopsis enrichment cycle and exit");
     }
 }

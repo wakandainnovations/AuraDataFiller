@@ -30,9 +30,12 @@ public class BoxOfficeMojoParser {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-    // Search results: href="/releasegroup/grXXX/" or href="/title/ttXXX/" (with optional sub-paths)
+    // Search results: href="/releasegroup/grXXX/?ref_=bo_se_r_1" or href="/title/ttXXX/?ref_=bo_se_r_2"
+    // (every result link on the search page carries a "?ref_=bo_se_r_N" query string, so the
+    // captured path must stop before it while the rest of the href — up to the closing quote —
+    // is still consumed).
     private static final Pattern SEARCH_LINK = Pattern.compile(
-        "href=\"(/(?:releasegroup/gr|title/tt)[^\"?#]*)\"[^>]*>([^<]+)</a>"
+        "href=\"(/(?:releasegroup/gr|title/tt)[^\"?#]*)[^\"]*\"[^>]*>([^<]+)</a>"
     );
 
     // Year in title text: "Inception (2010)"
@@ -49,6 +52,14 @@ public class BoxOfficeMojoParser {
     // Production budget on the same page.
     private static final Pattern BUDGET_PATTERN = Pattern.compile(
         "Production Budget[\\s\\S]{0,800}?\\$([\\d,]+)",
+        Pattern.DOTALL
+    );
+
+    // Plot synopsis on the title/release-group summary page.
+    // HTML: <h1 class="a-size-extra-large">Fast X<span ...> (2023)</span></h1>
+    //       <span class="a-size-medium">Dom Toretto and his family are targeted...</span>
+    private static final Pattern SYNOPSIS_PATTERN = Pattern.compile(
+        "<h1 class=\"a-size-extra-large\">[\\s\\S]*?</h1>\\s*<span class=\"a-size-medium\">([^<]+)</span>",
         Pattern.DOTALL
     );
 
@@ -84,6 +95,42 @@ public class BoxOfficeMojoParser {
 
         return new BoxOfficeRecord(movieName, year, bestPath, null, null, revenueUsd, budgetUsd,
                                    null, null, null, null, null);
+    }
+
+    /**
+     * Searches BOM for the given movie, fetches the best-matching page, and returns its
+     * plot synopsis. Returns null when no sufficiently-similar result is found or the
+     * matched page has no synopsis span.
+     */
+    public String searchAndParseSynopsis(String movieName, String year, double matchThreshold)
+            throws IOException, InterruptedException {
+        String query      = URLEncoder.encode(movieName + " " + year, StandardCharsets.UTF_8);
+        String searchHtml = fetch(SEARCH_URL + query, BASE_URL + "/");
+        if (searchHtml.isEmpty()) return null;
+
+        String bestPath = findBestMatch(searchHtml, movieName, year, matchThreshold);
+        if (bestPath == null) return null;
+
+        String pageHtml = fetch(BASE_URL + bestPath, BASE_URL + "/search/?q=" + query);
+        if (pageHtml.length() < 200) return null;
+
+        return parseSynopsis(pageHtml);
+    }
+
+    private String parseSynopsis(String html) {
+        Matcher m = SYNOPSIS_PATTERN.matcher(html);
+        if (!m.find()) return null;
+        String text = unescapeHtml(m.group(1).trim());
+        return text.isEmpty() ? null : text;
+    }
+
+    static String unescapeHtml(String s) {
+        if (s == null) return null;
+        return s.replace("&amp;", "&").replace("&nbsp;", " ")
+            .replace("&#39;", "'").replace("&#x27;", "'")
+            .replace("&#8217;", "’").replace("&#8216;", "‘")
+            .replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
+            .trim();
     }
 
     // ---- private helpers ----

@@ -124,6 +124,24 @@ public class SacnilkHtmlParser {
         Pattern.DOTALL
     );
 
+    // Detail pages have no dedicated synopsis section in the body; the only plot-adjacent
+    // text is packed into the SEO meta description, e.g.:
+    //   "Complete review of Mortal Kombat II (2026-05-08). Genre: Fantasy, Action. From New
+    //   Line Cinema comes ... Mortal Kombat II. This t... Total Collection: ₹9.90 Cr. Get
+    //   ratings, cast details, and user reviews."
+    // parseSynopsis() strips the leading/trailing boilerplate, leaving just the middle text.
+    // The result is frequently truncated mid-sentence (sacnilk's own description is cut off
+    // before the boilerplate suffix) — used only as a lower-quality fallback source.
+    private static final Pattern META_DESCRIPTION = Pattern.compile(
+        "<meta name=\"description\" content=\"([^\"]+)\"", Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern SYNOPSIS_PREFIX = Pattern.compile(
+        "^Complete review of .*?\\.\\s*Genre:\\s*[^.]*\\.\\s*", Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern SYNOPSIS_SUFFIX = Pattern.compile(
+        "\\.{0,3}\\s*Total Collection\\s*:.*$", Pattern.CASE_INSENSITIVE
+    );
+
     private final HttpClient httpClient;
 
     public SacnilkHtmlParser() {
@@ -174,6 +192,37 @@ public class SacnilkHtmlParser {
         return new BoxOfficeRecord(extractNameFromSlug(slug), extractYearFromSlug(slug),
                                    slug, worldwideCr, budgetCr,
                                    genre, language, runtimeMinutes, rating, status);
+    }
+
+    /**
+     * Fetches the detail page for a slug and returns a best-effort synopsis extracted from
+     * the SEO meta description, or null when the page doesn't exist or has no description.
+     * See the SYNOPSIS_* pattern comments above for why this text is often truncated.
+     */
+    public String fetchSynopsis(String slug) throws IOException, InterruptedException {
+        String url  = BASE_URL + "/movie/" + slug;
+        String html = fetch(url, BASE_URL + "/");
+        if (html.length() < 200) return null;
+        return parseSynopsis(html);
+    }
+
+    private String parseSynopsis(String html) {
+        Matcher m = META_DESCRIPTION.matcher(html);
+        if (!m.find()) return null;
+        String desc = unescapeHtml(m.group(1));
+        desc = SYNOPSIS_PREFIX.matcher(desc).replaceFirst("");
+        desc = SYNOPSIS_SUFFIX.matcher(desc).replaceFirst("");
+        desc = desc.trim();
+        return desc.isEmpty() ? null : desc;
+    }
+
+    private static String unescapeHtml(String s) {
+        if (s == null) return null;
+        return s.replace("&amp;", "&").replace("&nbsp;", " ")
+            .replace("&#39;", "'").replace("&#x27;", "'")
+            .replace("&#8217;", "’").replace("&#8216;", "‘")
+            .replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
+            .trim();
     }
 
     /** Extracts the movie display name from a slug: "KGF_Chapter_2_2022" → "KGF Chapter 2". */
