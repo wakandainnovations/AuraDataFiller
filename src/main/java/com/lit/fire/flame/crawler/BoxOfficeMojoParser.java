@@ -6,6 +6,10 @@ import java.net.URLEncoder;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.*;
 
 /**
@@ -203,6 +207,10 @@ public class BoxOfficeMojoParser {
         }
     }
 
+    // HttpRequest.timeout() is not a reliable upper bound in practice — observed hanging
+    // indefinitely on a live multi-hour run (thread parked in HttpClientImpl.send with zero
+    // CPU progress for hours, well past the configured 30s). sendAsync().get(timeout) imposes
+    // a hard deadline at the call site instead, independent of whatever went wrong internally.
     String fetch(String url, String referer) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(url))
@@ -214,8 +222,19 @@ public class BoxOfficeMojoParser {
             .GET()
             .build();
 
-        HttpResponse<String> response =
-            httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        CompletableFuture<HttpResponse<String>> future =
+            httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response;
+        try {
+            response = future.get(35, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw new IOException("Timed out (hard deadline) fetching " + url);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("Failed fetching " + url, cause);
+        }
 
         if (response.statusCode() == 404) return "";
         if (response.statusCode() != 200)

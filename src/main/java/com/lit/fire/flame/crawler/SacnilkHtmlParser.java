@@ -10,6 +10,10 @@ import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -384,6 +388,11 @@ public class SacnilkHtmlParser {
      * Performs a GET request with browser-like headers using HTTP/1.1.
      * sacnilk.com is behind Cloudflare and returns an empty body for requests
      * without a Referer, so we always send one.
+     *
+     * HttpRequest.timeout() is not a reliable upper bound in practice — observed hanging
+     * indefinitely on a live multi-hour run (thread parked in HttpClientImpl.send with zero
+     * CPU progress for hours, well past the configured 30s). sendAsync().get(timeout) imposes
+     * a hard deadline at the call site instead, independent of whatever went wrong internally.
      */
     private String fetch(String url, String referer) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder()
@@ -397,8 +406,19 @@ public class SacnilkHtmlParser {
             .GET()
             .build();
 
-        HttpResponse<String> response =
-            httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        CompletableFuture<HttpResponse<String>> future =
+            httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response;
+        try {
+            response = future.get(35, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw new IOException("Timed out (hard deadline) fetching " + url);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("Failed fetching " + url, cause);
+        }
 
         if (response.statusCode() == 404) {
             return ""; // movie page not found – caller treats empty body gracefully
