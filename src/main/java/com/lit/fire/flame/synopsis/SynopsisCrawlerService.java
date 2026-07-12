@@ -347,12 +347,19 @@ public class SynopsisCrawlerService implements Runnable {
         if (lastRequestAt > 0 && elapsed < delayMs) Thread.sleep(delayMs - elapsed);
     }
 
+    // Explicit flush() matters here: this service is meant to run for days/weeks as a
+    // detached background process with stdout redirected to a log file (e.g. `nohup ... &`),
+    // and a redirected-to-file stdout is block-buffered rather than line-buffered, so without
+    // this a live `tail -f` (or any progress check) can lag reality by a large, unpredictable
+    // margin even though the underlying DB writes are already committed.
     private void log(String msg) {
         System.out.println(PREFIX + msg);
+        System.out.flush();
     }
 
     private void logErr(String msg) {
         System.err.println(PREFIX + msg);
+        System.err.flush();
     }
 
     private Properties loadProperties(String resourceName, boolean required) {
