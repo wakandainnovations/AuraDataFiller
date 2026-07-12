@@ -33,9 +33,13 @@ public class BoxOfficeMojoParser {
     // Search results: href="/releasegroup/grXXX/?ref_=bo_se_r_1" or href="/title/ttXXX/?ref_=bo_se_r_2"
     // (every result link on the search page carries a "?ref_=bo_se_r_N" query string, so the
     // captured path must stop before it while the rest of the href — up to the closing quote —
-    // is still consumed).
+    // is still consumed). The release year, when present, is NOT inside the anchor text — it's
+    // in a sibling span immediately after </a>, e.g. ...>Fast X</a><span class="a-color-secondary">
+    // (2023)</span> — so it's captured here as an optional trailing group rather than relying on
+    // (broken) year-in-label extraction.
     private static final Pattern SEARCH_LINK = Pattern.compile(
-        "href=\"(/(?:releasegroup/gr|title/tt)[^\"?#]*)[^\"]*\"[^>]*>([^<]+)</a>"
+        "href=\"(/(?:releasegroup/gr|title/tt)[^\"?#]*)[^\"]*\"[^>]*>([^<]+)</a>" +
+        "(?:<span[^>]*>\\s*\\((\\d{4})\\)\\s*</span>)?"
     );
 
     // Year in title text: "Inception (2010)"
@@ -79,7 +83,11 @@ public class BoxOfficeMojoParser {
      */
     public BoxOfficeRecord searchAndParse(String movieName, String year, double matchThreshold)
             throws IOException, InterruptedException {
-        String query    = URLEncoder.encode(movieName + " " + year, StandardCharsets.UTF_8);
+        // Search by title alone: BOM's search does literal phrase matching, so appending the
+        // year (e.g. "Oppenheimer 2023") can return zero results even when the movie has a
+        // page — "Oppenheimer" alone finds it. The year is still enforced below, via the
+        // per-result year captured by findBestMatch.
+        String query    = URLEncoder.encode(movieName, StandardCharsets.UTF_8);
         String searchHtml = fetch(SEARCH_URL + query, BASE_URL + "/");
         if (searchHtml.isEmpty()) return null;
 
@@ -104,7 +112,8 @@ public class BoxOfficeMojoParser {
      */
     public String searchAndParseSynopsis(String movieName, String year, double matchThreshold)
             throws IOException, InterruptedException {
-        String query      = URLEncoder.encode(movieName + " " + year, StandardCharsets.UTF_8);
+        // See searchAndParse() for why the year is deliberately left out of the query itself.
+        String query      = URLEncoder.encode(movieName, StandardCharsets.UTF_8);
         String searchHtml = fetch(SEARCH_URL + query, BASE_URL + "/");
         if (searchHtml.isEmpty()) return null;
 
@@ -154,9 +163,13 @@ public class BoxOfficeMojoParser {
             String href  = m.group(1);
             String label = m.group(2).trim();
 
-            // Extract year from label if present
-            Matcher ym = YEAR_IN_TEXT.matcher(label);
-            String resultYear = ym.find() ? ym.group(1) : null;
+            // Year comes from the sibling span captured in group 3; fall back to scanning the
+            // label itself in case some result types embed it inline instead.
+            String resultYear = m.group(3);
+            if (resultYear == null) {
+                Matcher ym = YEAR_IN_TEXT.matcher(label);
+                resultYear = ym.find() ? ym.group(1) : null;
+            }
 
             // Hard-reject on year mismatch when both sides have a year
             if (targetYear != null && resultYear != null && !targetYear.equals(resultYear)) continue;
