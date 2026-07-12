@@ -124,13 +124,21 @@ public class BoxOfficeMojoParser {
         return text.isEmpty() ? null : text;
     }
 
+    // Numeric character references: decimal (&#39;) or hex (&#x27;), with any amount of
+    // zero-padding (&#039; is the same character as &#39;) — a fixed replace() list can't
+    // cover every padding variant a site might emit, so these are decoded generically.
+    private static final Pattern NUMERIC_ENTITY_HEX = Pattern.compile("&#[xX]([0-9a-fA-F]+);");
+    private static final Pattern NUMERIC_ENTITY_DEC = Pattern.compile("&#(\\d+);");
+
     static String unescapeHtml(String s) {
         if (s == null) return null;
-        return s.replace("&amp;", "&").replace("&nbsp;", " ")
-            .replace("&#39;", "'").replace("&#x27;", "'")
-            .replace("&#8217;", "’").replace("&#8216;", "‘")
-            .replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
-            .trim();
+        String result = s.replace("&nbsp;", " ")
+            .replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">");
+        result = NUMERIC_ENTITY_HEX.matcher(result).replaceAll(
+            m -> Matcher.quoteReplacement(new String(Character.toChars(Integer.parseInt(m.group(1), 16)))));
+        result = NUMERIC_ENTITY_DEC.matcher(result).replaceAll(
+            m -> Matcher.quoteReplacement(new String(Character.toChars(Integer.parseInt(m.group(1))))));
+        return result.replace("&amp;", "&").trim(); // decode last so it can't corrupt other entities above
     }
 
     // ---- private helpers ----
