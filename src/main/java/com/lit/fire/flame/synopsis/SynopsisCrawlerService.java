@@ -19,8 +19,8 @@ import java.util.*;
  *      from the SEO meta description and is frequently truncated mid-sentence — used
  *      only when BOM has nothing.
  *
- * Scope: movies released after 1980, already released (release_date <= today when a full
- * date is known), most recently released first (e.g. 2026 down to 1981).
+ * Scope: Indian-language movies released after 2000, already released (release_date <=
+ * today when a full date is known), most recently released first (e.g. 2026 down to 2001).
  *
  * Thread model mirrors SacnilkCrawlerService/YoutubeEnrichmentService: run() loops
  * forever with a configurable interval (default 24h); runOnce() does a single cycle
@@ -98,7 +98,7 @@ public class SynopsisCrawlerService implements Runnable {
             candidates = db.getMoviesMissingSynopsis(batchSize, recheckDays);
         }
         log(String.format(
-            "Found %,d movie(s) missing a synopsis (released after 1980, up to today, most recent year first).",
+            "Found %,d Indian-language movie(s) missing a synopsis (released after 2000, up to today, most recent year first).",
             candidates.size()));
 
         if (candidates.isEmpty()) {

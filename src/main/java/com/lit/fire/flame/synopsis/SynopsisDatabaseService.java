@@ -60,12 +60,22 @@ public class SynopsisDatabaseService implements AutoCloseable {
     public record Candidate(String movieName, String year, String releaseDate) {}
 
     /**
+     * Indian-language filter, matching the same list used elsewhere in the app
+     * (CrawlerDatabaseService.queryMissingBoxOffice, YoutubeDatabaseService).
+     */
+    private static final String INDIAN_LANGUAGES_SQL =
+        "('hindi','tamil','telugu','malayalam','kannada','bengali'," +
+        "'marathi','punjabi','gujarati','odia','oriya','urdu'," +
+        "'assamese','bhojpuri','nepali','rajasthani','rajastani'," +
+        "'tulu','sanskrit','konkani','kashmiri')";
+
+    /**
      * Returns up to {@code limit} distinct (movie_name, year) groups still missing a
-     * synopsis, restricted to already-released movies with release year strictly after
-     * 1980 and up to the current year, ordered most-recently-released first (2026 down
-     * to 1981). A group with only a bare 4-digit year (no day precision) in the current
-     * year is included — day-level "before today" filtering only applies when a full
-     * YYYY-MM-DD release_date is available.
+     * synopsis, restricted to already-released Indian-language movies with release year
+     * strictly after 2000 and up to the current year, ordered most-recently-released
+     * first (2026 down to 2001). A group with only a bare 4-digit year (no day precision)
+     * in the current year is included — day-level "before today" filtering only applies
+     * when a full YYYY-MM-DD release_date is available.
      *
      * A group is skipped when every missing row was already checked (by either source)
      * within the last {@code recheckDays} days — see markChecked().
@@ -76,9 +86,10 @@ public class SynopsisDatabaseService implements AutoCloseable {
             "       COALESCE(MIN(release_date) FILTER (WHERE LENGTH(release_date) = 10), MIN(release_date)) AS release_date " +
             "FROM " + q(tableName) +
             " WHERE release_date IS NOT NULL AND LEFT(release_date, 4) ~ '^[0-9]{4}$' " +
-            "   AND LEFT(release_date, 4)::int > 1980 " +
+            "   AND LEFT(release_date, 4)::int > 2000 " +
             "   AND LEFT(release_date, 4)::int <= EXTRACT(YEAR FROM CURRENT_DATE)::int " +
             "   AND (LENGTH(release_date) <> 10 OR release_date::date <= CURRENT_DATE) " +
+            "   AND LOWER(\"language\") IN " + INDIAN_LANGUAGES_SQL + " " +
             "GROUP BY movie_name, LEFT(release_date, 4) " +
             "HAVING BOOL_OR(COALESCE(\"synopsis\", '') = '' AND " +
             "               (\"synopsis_last_checked\" IS NULL OR \"synopsis_last_checked\"::date < CURRENT_DATE - ?::int)) " +
