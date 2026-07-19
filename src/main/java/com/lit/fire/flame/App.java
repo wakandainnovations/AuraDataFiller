@@ -5,6 +5,7 @@ import com.lit.fire.flame.actor.SacnilkActorCrawlerService;
 import com.lit.fire.flame.actor.SupplementalActorCrawlerService;
 import com.lit.fire.flame.crawler.BoxOfficeCrawlerOrchestrator;
 import com.lit.fire.flame.crawler.SacnilkCrawlerService;
+import com.lit.fire.flame.enrichment.EconomicEnrichmentService;
 import com.lit.fire.flame.synopsis.SynopsisCrawlerService;
 import com.lit.fire.flame.youtube.YoutubeEnrichmentService;
 
@@ -56,6 +57,10 @@ public class App {
         } else if ("--synopsis-scan-once".equals(args[0])) {
             // Run one synopsis enrichment cycle and exit.
             new SynopsisCrawlerService().runOnce();
+        } else if ("--econ-scan-once".equals(args[0])) {
+            // Backfill gdp_usd_billions/inflation_rate_pct (World Bank API) for existing rows:
+            // Indian-language movies released after 2000. One-shot, then exit.
+            new EconomicEnrichmentService().runOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -131,5 +136,6 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --youtube-scan-movie \"Movie Name\" YYYY  # test enrichment for one movie and exit");
         System.err.println("  java -jar AuraDataFiller.jar --synopsis-scan                        # fill synopsis column (boxofficemojo.com + sacnilk.com), repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --synopsis-scan-once                    # run one synopsis enrichment cycle and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --econ-scan-once                        # backfill GDP/inflation for Indian movies released after 2000, then exit");
     }
 }
