@@ -5,6 +5,7 @@ import com.lit.fire.flame.actor.SacnilkActorCrawlerService;
 import com.lit.fire.flame.actor.SupplementalActorCrawlerService;
 import com.lit.fire.flame.crawler.BoxOfficeCrawlerOrchestrator;
 import com.lit.fire.flame.crawler.SacnilkCrawlerService;
+import com.lit.fire.flame.credits.CreditsCrawlerService;
 import com.lit.fire.flame.enrichment.EconomicEnrichmentService;
 import com.lit.fire.flame.synopsis.SynopsisCrawlerService;
 import com.lit.fire.flame.youtube.YoutubeEnrichmentService;
@@ -61,6 +62,13 @@ public class App {
             // Backfill gdp_usd_billions/inflation_rate_pct (World Bank API) for existing rows:
             // Indian-language movies released after 2000. One-shot, then exit.
             new EconomicEnrichmentService().runOnce();
+        } else if ("--credits-scan".equals(args[0])) {
+            // Fill "directors"/"production_companies" columns (sacnilk.com) for Indian-language
+            // movies released after 2000, then repeat every 24 h.
+            new CreditsCrawlerService().run();
+        } else if ("--credits-scan-once".equals(args[0])) {
+            // Run one directors/production_companies enrichment cycle and exit.
+            new CreditsCrawlerService().runOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -74,6 +82,7 @@ public class App {
             startDaemonActorCollector();
             startDaemonYoutubeService();
             startDaemonSynopsisService();
+            startDaemonCreditsService();
             if (args.length < 2) {
                 System.err.println("--watch requires a folder path.");
                 printUsage();
@@ -120,6 +129,12 @@ public class App {
         t.start();
     }
 
+    private static void startDaemonCreditsService() {
+        Thread t = new Thread(new CreditsCrawlerService(), "credits-crawler");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static void printUsage() {
         System.err.println("Usage:");
         System.err.println("  java -jar AuraDataFiller.jar <path-to-csv-file>");
@@ -137,5 +152,7 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --synopsis-scan                        # fill synopsis column (boxofficemojo.com + sacnilk.com), repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --synopsis-scan-once                    # run one synopsis enrichment cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --econ-scan-once                        # backfill GDP/inflation for Indian movies released after 2000, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --credits-scan                         # fill directors/production_companies columns (sacnilk.com), repeat every 24 h");
+        System.err.println("  java -jar AuraDataFiller.jar --credits-scan-once                    # run one directors/production_companies enrichment cycle and exit");
     }
 }

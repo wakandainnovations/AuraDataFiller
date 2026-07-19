@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -146,6 +147,29 @@ public class SacnilkHtmlParser {
         "\\.{0,3}\\s*Total Collection\\s*:.*$", Pattern.CASE_INSENSITIVE
     );
 
+    // Director credits, in the "Movie Information" sidebar (present only when sacnilk has
+    // the data — omitted entirely on older/smaller-title pages, no "N/A" placeholder):
+    //   <span>🎬 Director:&nbsp;</span>
+    //   <span class="inline-flex flex-wrap gap-1">
+    //     <a href=".../tag/Atlee_%28director%29" ...>Atlee (director)</a>
+    //   </span>
+    // Co-directed films repeat the <a> tag inside the same flex-wrap span.
+    private static final Pattern DIRECTOR_BLOCK = Pattern.compile(
+        "🎬 Director:&nbsp;</span>\\s*<span class=\"inline-flex flex-wrap gap-1\">([\\s\\S]*?)</span>"
+    );
+    private static final Pattern DIRECTOR_NAME = Pattern.compile(">([^<]+)</a>");
+    // Tag links append a disambiguation suffix (e.g. "Atlee (director)") not present on
+    // unambiguous names (e.g. "Christopher Nolan") — stripped for a clean display name.
+    private static final Pattern DIRECTOR_SUFFIX = Pattern.compile(
+        "\\s*\\(director\\)$", Pattern.CASE_INSENSITIVE
+    );
+
+    // Production company/companies, same sidebar, one block per co-production partner:
+    //   <span ...>🏢 Production: Red Chillies Entertainment</span>
+    private static final Pattern PRODUCTION_COMPANY = Pattern.compile(
+        "🏢 Production:\\s*([^<]+?)\\s*</span>"
+    );
+
     private final HttpClient httpClient;
 
     public SacnilkHtmlParser() {
@@ -218,6 +242,47 @@ public class SacnilkHtmlParser {
         desc = SYNOPSIS_SUFFIX.matcher(desc).replaceFirst("");
         desc = desc.trim();
         return desc.isEmpty() ? null : desc;
+    }
+
+    /** Director(s) and production compan(y/ies) scraped from a sacnilk movie detail page. */
+    public record CreditsInfo(String directors, String productionCompanies) {}
+
+    /**
+     * Fetches the detail page for a slug and returns director(s) and production
+     * compan(y/ies), or null when the page doesn't exist or has neither field. Either
+     * field of the returned record may individually be null when only one is present.
+     */
+    public CreditsInfo fetchCredits(String slug) throws IOException, InterruptedException {
+        String url  = BASE_URL + "/movie/" + slug;
+        String html = fetch(url, BASE_URL + "/");
+        if (html.length() < 200) return null;
+
+        String directors  = parseDirectors(html);
+        String production = parseProductionCompanies(html);
+        return (directors == null && production == null) ? null : new CreditsInfo(directors, production);
+    }
+
+    private String parseDirectors(String html) {
+        Matcher block = DIRECTOR_BLOCK.matcher(html);
+        if (!block.find()) return null;
+
+        LinkedHashSet<String> names = new LinkedHashSet<>();
+        Matcher name = DIRECTOR_NAME.matcher(block.group(1));
+        while (name.find()) {
+            String n = DIRECTOR_SUFFIX.matcher(unescapeHtml(name.group(1)).trim()).replaceFirst("");
+            if (!n.isEmpty()) names.add(n);
+        }
+        return names.isEmpty() ? null : String.join(", ", names);
+    }
+
+    private String parseProductionCompanies(String html) {
+        LinkedHashSet<String> companies = new LinkedHashSet<>();
+        Matcher m = PRODUCTION_COMPANY.matcher(html);
+        while (m.find()) {
+            String c = unescapeHtml(m.group(1)).trim();
+            if (!c.isEmpty() && !c.equalsIgnoreCase("N/A")) companies.add(c);
+        }
+        return companies.isEmpty() ? null : String.join(", ", companies);
     }
 
     // Numeric character references: decimal (&#39;) or hex (&#x27;), with any amount of
