@@ -14,7 +14,7 @@ import java.util.List;
 
 /**
  * Database operations for the GDP/inflation backfill over existing rows in
- * movies_data_collection. Mirrors SynopsisDatabaseService/CrawlerDatabaseService
+ * movies_data_collection. Mirrors CreditsDatabaseService/CrawlerDatabaseService
  * conventions: dedicated connection, ADD COLUMN IF NOT EXISTS, update-by release year.
  */
 public class EconomicDatabaseService implements AutoCloseable {
@@ -31,7 +31,7 @@ public class EconomicDatabaseService implements AutoCloseable {
 
     /**
      * Indian-language filter, matching the same list used elsewhere in the app
-     * (SynopsisDatabaseService, CrawlerDatabaseService.queryMissingBoxOffice, YoutubeDatabaseService).
+     * (CreditsDatabaseService, CrawlerDatabaseService.queryMissingBoxOffice, YoutubeDatabaseService).
      */
     private static final String INDIAN_LANGUAGES_SQL =
         "('hindi','tamil','telugu','malayalam','kannada','bengali'," +

@@ -36,7 +36,8 @@ public class ColumnMapper {
         "overview", "description", "tagline",
         "backdrop_path", "poster_path", "homepage",
         // columns dropped from movies_data_collection — prevent re-creation on import
-        "originaltitle", "rating", "releasedate"
+        "originaltitle", "rating", "releasedate",
+        "votes", "vote_count", "status", "imdb_rating"
     );
 
     private static final Set<String> NUMERIC_PG_TYPES = Set.of(
@@ -82,7 +83,6 @@ public class ColumnMapper {
         if (MOVIE_NAME_ALIASES.contains(lower)) return MOVIE_NAME_COL;
         if ("year".equals(lower) || "release_date".equals(lower)) return RELEASE_DATE_COL;
         if ("vote_average".equals(lower))    return "rating_10";
-        if ("vote_count".equals(lower))      return "votes";
         if ("original_language".equals(lower)) return "language";
         String dbName = lower.replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
         // Merge duplicate column variants into their canonical names

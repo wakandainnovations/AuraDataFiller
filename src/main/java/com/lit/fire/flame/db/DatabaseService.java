@@ -13,19 +13,12 @@ public class DatabaseService implements AutoCloseable {
 
     private static final int BATCH_SIZE = 500;
 
-    // DB column that holds each description-derived finance field (all NUMERIC, USD, default 0).
-    // budget/revenue reuse the pre-existing columns; the rest are created by ensureFinanceColumns().
+    // DB column that holds each description-derived finance field written by
+    // updateFinanceGreatest(). Both are pre-existing columns — no ALTER TABLE needed.
     private static final Map<DescriptionParser.Field, String> FINANCE_COLUMNS = new LinkedHashMap<>();
     static {
-        FINANCE_COLUMNS.put(DescriptionParser.Field.BUDGET,                 "budget");
-        FINANCE_COLUMNS.put(DescriptionParser.Field.REVENUE,                "revenue");
-        FINANCE_COLUMNS.put(DescriptionParser.Field.DOMESTIC_COLLECTION,    "domestic_collection_usd");
-        FINANCE_COLUMNS.put(DescriptionParser.Field.OVERSEAS_COLLECTION,    "overseas_collection_usd");
-        FINANCE_COLUMNS.put(DescriptionParser.Field.INDIA_GROSS_COLLECTION, "india_gross_collection_usd");
-        FINANCE_COLUMNS.put(DescriptionParser.Field.FIRST_DAY_WORLDWIDE,    "first_day_worldwide_usd");
-        FINANCE_COLUMNS.put(DescriptionParser.Field.FIRST_DAY_INDIA,        "first_day_india_usd");
-        FINANCE_COLUMNS.put(DescriptionParser.Field.OPENING_WEEKEND,        "opening_weekend_usd");
-        FINANCE_COLUMNS.put(DescriptionParser.Field.DISTRIBUTOR_SHARE,      "distributor_share_usd");
+        FINANCE_COLUMNS.put(DescriptionParser.Field.BUDGET,  "budget");
+        FINANCE_COLUMNS.put(DescriptionParser.Field.REVENUE, "revenue");
     }
 
     private final Connection connection;
@@ -232,38 +225,18 @@ public class DatabaseService implements AutoCloseable {
     }
 
     /**
-     * Adds the columns written by {@link #updateFinanceGreatest} if they don't already exist.
-     * budget/revenue are pre-existing and skipped; the rest default to 0 (NUMERIC) or NULL (TEXT).
-     * Safe to call on every run.
-     */
-    public void ensureFinanceColumns() throws SQLException {
-        try (Statement stmt = connection.createStatement()) {
-            for (String col : FINANCE_COLUMNS.values()) {
-                if ("budget".equals(col) || "revenue".equals(col)) continue;
-                stmt.execute("ALTER TABLE " + q(tableName) +
-                    " ADD COLUMN IF NOT EXISTS " + q(col) + " NUMERIC DEFAULT 0");
-            }
-            stmt.execute("ALTER TABLE " + q(tableName) + " ADD COLUMN IF NOT EXISTS \"verdict\" TEXT DEFAULT NULL");
-            stmt.execute("ALTER TABLE " + q(tableName) + " ADD COLUMN IF NOT EXISTS \"verdict_note\" TEXT DEFAULT NULL");
-        }
-        connection.commit();
-    }
-
-    /**
-     * Updates the description-derived finance fields for every row matching movieName + year
-     * (release_date year prefix, ignoring language — mirrors {@code CrawlerDatabaseService}'s
-     * matching so it reaches rows regardless of which source first inserted them).
+     * Updates the description-derived finance fields (budget, revenue) for every row matching
+     * movieName + year (release_date year prefix, ignoring language — mirrors
+     * {@code CrawlerDatabaseService}'s matching so it reaches rows regardless of which source
+     * first inserted them).
      *
-     * Money fields (budget, revenue, and the supplementary collection/share columns) only ever
-     * move upward: each is set to GREATEST(current value, incoming value), so a lower incoming
-     * figure never overwrites a better one already stored.
-     * verdict / verdict_note are text fields filled only when currently empty.
+     * Money fields only ever move upward: each is set to GREATEST(current value, incoming
+     * value), so a lower incoming figure never overwrites a better one already stored.
      *
      * @return number of rows touched
      */
     public int updateFinanceGreatest(String movieName, String year,
-                                      Map<DescriptionParser.Field, Long> usdAmounts,
-                                      String verdict, String note) throws SQLException {
+                                      Map<DescriptionParser.Field, Long> usdAmounts) throws SQLException {
         List<String> setClauses = new ArrayList<>();
         List<Object> numericParams = new ArrayList<>();
 
@@ -275,9 +248,6 @@ public class DatabaseService implements AutoCloseable {
             numericParams.add(amount);
         }
 
-        setClauses.add("\"verdict\" = CASE WHEN ? IS NOT NULL AND (\"verdict\" IS NULL OR \"verdict\" = '') THEN ? ELSE \"verdict\" END");
-        setClauses.add("\"verdict_note\" = CASE WHEN ? IS NOT NULL AND (\"verdict_note\" IS NULL OR \"verdict_note\" = '') THEN ? ELSE \"verdict_note\" END");
-
         String sql = "UPDATE " + q(tableName) + " SET " + String.join(", ", setClauses) +
             " WHERE \"movie_name\" = ? AND LEFT(\"release_date\", 4) = ?";
 
@@ -287,10 +257,6 @@ public class DatabaseService implements AutoCloseable {
             for (Object p : numericParams) {
                 if (p == null) ps.setNull(i++, Types.NUMERIC);
                 else ps.setLong(i++, (Long) p);
-            }
-            for (String textVal : new String[]{verdict, verdict, note, note}) {
-                if (textVal == null) ps.setNull(i++, Types.VARCHAR);
-                else ps.setString(i++, textVal);
             }
             ps.setString(i++, movieName);
             ps.setString(i,   year);

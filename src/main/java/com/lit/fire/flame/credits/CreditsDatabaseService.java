@@ -11,7 +11,7 @@ import java.util.List;
 
 /**
  * Database operations for the director/production-company enrichment service.
- * Mirrors SynopsisDatabaseService conventions: dedicated connection, ADD COLUMN IF NOT
+ * Mirrors EconomicDatabaseService conventions: dedicated connection, ADD COLUMN IF NOT
  * EXISTS, update-by movie_name + release-year.
  */
 public class CreditsDatabaseService implements AutoCloseable {
@@ -62,7 +62,7 @@ public class CreditsDatabaseService implements AutoCloseable {
 
     /**
      * Indian-language filter, matching the same list used elsewhere in the app
-     * (SynopsisDatabaseService, CrawlerDatabaseService.queryMissingBoxOffice, YoutubeDatabaseService).
+     * (EconomicDatabaseService, CrawlerDatabaseService.queryMissingBoxOffice, YoutubeDatabaseService).
      */
     private static final String INDIAN_LANGUAGES_SQL =
         "('hindi','tamil','telugu','malayalam','kannada','bengali'," +

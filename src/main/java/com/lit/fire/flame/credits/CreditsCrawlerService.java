@@ -15,13 +15,12 @@ import java.util.*;
  * pages carry structured director/production credits (a "🎬 Director:" / "🏢 Production:"
  * block in the Movie Information sidebar, present whenever sacnilk has the data).
  * boxofficemojo.com's title pages don't expose crew credits without an IMDb Pro
- * subscription, so — unlike SynopsisCrawlerService, which uses BOM as its primary source
- * with sacnilk as fallback — sacnilk is the only source here.
+ * subscription, so sacnilk is the only source here.
  *
- * Scope: Indian-language movies released after 2000, matched to sacnilk sitemap slugs the
- * same way SynopsisCrawlerService's sacnilk phase does (year + fuzzy title match).
+ * Scope: Indian-language movies released after 2000, matched to sacnilk sitemap slugs by
+ * year + fuzzy title match.
  *
- * Thread model mirrors SynopsisCrawlerService: run() loops forever with a configurable
+ * Thread model mirrors RuntimeBudgetCrawlerService: run() loops forever with a configurable
  * interval (default 24h); runOnce() does a single cycle for one-shot/manual invocation
  * (--credits-scan-once).
  */
@@ -111,7 +110,7 @@ public class CreditsCrawlerService implements Runnable {
         log(String.format("Found %,d movie slug(s).", slugs.size()));
         Thread.sleep(delayMs);
 
-        // Group candidates by year for matching, same approach as SynopsisCrawlerService.
+        // Group candidates by year for matching, same approach as RuntimeBudgetCrawlerService.
         Map<String, List<CreditsDatabaseService.Candidate>> byYear = new HashMap<>();
         for (CreditsDatabaseService.Candidate c : candidates) {
             byYear.computeIfAbsent(c.year(), k -> new ArrayList<>()).add(c);
@@ -213,7 +212,7 @@ public class CreditsCrawlerService implements Runnable {
             candidates.size(), matched.size(), filled, noData, errors, recheckDays));
     }
 
-    // ---- name normalisation and similarity (mirrors SynopsisCrawlerService/SacnilkCrawlerService) ----
+    // ---- name normalisation and similarity (mirrors RuntimeBudgetCrawlerService/SacnilkCrawlerService) ----
 
     static String normalize(String name) {
         return name.toLowerCase()
@@ -266,7 +265,7 @@ public class CreditsCrawlerService implements Runnable {
 
     // Explicit flush() matters here: this service is meant to run for days/weeks as a
     // detached background process with stdout redirected to a log file, and a redirected-
-    // to-file stdout is block-buffered rather than line-buffered — see SynopsisCrawlerService.
+    // to-file stdout is block-buffered rather than line-buffered.
     private void log(String msg) {
         System.out.println(PREFIX + msg);
         System.out.flush();

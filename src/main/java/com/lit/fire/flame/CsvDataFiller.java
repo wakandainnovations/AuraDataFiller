@@ -284,7 +284,6 @@ public class CsvDataFiller {
         String fullDateHeader = findHeaderIgnoreCase(csvData.headers(), "release date");
 
         System.out.println("Parsing box-office figures out of the Description column...");
-        db.ensureFinanceColumns();
 
         DescriptionParser parser = new DescriptionParser();
         String url      = secrets.getProperty("db.url");
@@ -322,7 +321,7 @@ public class CsvDataFiller {
                 }
 
                 DescriptionParser.ParsedDescription parsed = parser.parse(desc);
-                if (parsed.amounts().isEmpty() && parsed.verdict() == null && parsed.note() == null) {
+                if (parsed.amounts().isEmpty()) {
                     noData++;
                     continue;
                 }
@@ -332,6 +331,10 @@ public class CsvDataFiller {
                 boolean rateFetchFailed = false;
 
                 for (Map.Entry<DescriptionParser.Field, DescriptionParser.Amount> e : parsed.amounts().entrySet()) {
+                    // Only budget/revenue are persisted — see DatabaseService.FINANCE_COLUMNS.
+                    if (e.getKey() != DescriptionParser.Field.BUDGET && e.getKey() != DescriptionParser.Field.REVENUE) {
+                        continue;
+                    }
                     DescriptionParser.Amount amount = e.getValue();
                     if (amount.isUsd()) {
                         usdAmounts.put(e.getKey(), amount.value().setScale(0, RoundingMode.HALF_UP).longValueExact());
@@ -351,13 +354,13 @@ public class CsvDataFiller {
                     }
                 }
 
-                if (usdAmounts.isEmpty() && parsed.verdict() == null && parsed.note() == null) {
+                if (usdAmounts.isEmpty()) {
                     noData++;
                     continue;
                 }
 
                 try {
-                    int rows = db.updateFinanceGreatest(movieName, year, usdAmounts, parsed.verdict(), parsed.note());
+                    int rows = db.updateFinanceGreatest(movieName, year, usdAmounts);
                     if (rows > 0) updated++; else noMatch++;
                 } catch (Exception ex) {
                     errors++;

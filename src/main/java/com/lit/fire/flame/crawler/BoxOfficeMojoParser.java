@@ -63,14 +63,6 @@ public class BoxOfficeMojoParser {
         Pattern.DOTALL
     );
 
-    // Plot synopsis on the title/release-group summary page.
-    // HTML: <h1 class="a-size-extra-large">Fast X<span ...> (2023)</span></h1>
-    //       <span class="a-size-medium">Dom Toretto and his family are targeted...</span>
-    private static final Pattern SYNOPSIS_PATTERN = Pattern.compile(
-        "<h1 class=\"a-size-extra-large\">[\\s\\S]*?</h1>\\s*<span class=\"a-size-medium\">([^<]+)</span>",
-        Pattern.DOTALL
-    );
-
     private final HttpClient httpClient;
 
     public BoxOfficeMojoParser() {
@@ -107,34 +99,6 @@ public class BoxOfficeMojoParser {
 
         return new BoxOfficeRecord(movieName, year, bestPath, null, null, revenueUsd, budgetUsd,
                                    null, null, null, null, null);
-    }
-
-    /**
-     * Searches BOM for the given movie, fetches the best-matching page, and returns its
-     * plot synopsis. Returns null when no sufficiently-similar result is found or the
-     * matched page has no synopsis span.
-     */
-    public String searchAndParseSynopsis(String movieName, String year, double matchThreshold)
-            throws IOException, InterruptedException {
-        // See searchAndParse() for why the year is deliberately left out of the query itself.
-        String query      = URLEncoder.encode(movieName, StandardCharsets.UTF_8);
-        String searchHtml = fetch(SEARCH_URL + query, BASE_URL + "/");
-        if (searchHtml.isEmpty()) return null;
-
-        String bestPath = findBestMatch(searchHtml, movieName, year, matchThreshold);
-        if (bestPath == null) return null;
-
-        String pageHtml = fetch(BASE_URL + bestPath, BASE_URL + "/search/?q=" + query);
-        if (pageHtml.length() < 200) return null;
-
-        return parseSynopsis(pageHtml);
-    }
-
-    private String parseSynopsis(String html) {
-        Matcher m = SYNOPSIS_PATTERN.matcher(html);
-        if (!m.find()) return null;
-        String text = unescapeHtml(m.group(1).trim());
-        return text.isEmpty() ? null : text;
     }
 
     // Numeric character references: decimal (&#39;) or hex (&#x27;), with any amount of
