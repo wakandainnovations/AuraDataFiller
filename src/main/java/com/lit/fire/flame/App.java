@@ -9,6 +9,7 @@ import com.lit.fire.flame.credits.CreditsCrawlerService;
 import com.lit.fire.flame.enrichment.EconomicEnrichmentService;
 import com.lit.fire.flame.legacycsv.LegacyCsvBackfillService;
 import com.lit.fire.flame.marketing.MarketingTacticsService;
+import com.lit.fire.flame.tamilcsv.TamilCsvImportService;
 import com.lit.fire.flame.runtimebudget.RuntimeBudgetCrawlerService;
 import com.lit.fire.flame.youtube.YoutubeEnrichmentService;
 
@@ -71,10 +72,17 @@ public class App {
             // Run one runtime/budget enrichment cycle and exit.
             new RuntimeBudgetCrawlerService().runOnce();
         } else if ("--legacy-csv-import".equals(args[0])) {
-            // One-shot backfill of genre/release_event_type/revenue/budget/number_of_screens
-            // (movies_data_collection.legacycsv.folder) for existing Hindi movies, matched by
-            // title only (no year in the source CSVs). Never creates new columns or rows.
+            // One-shot backfill of genre/release_event_type/revenue/budget/number_of_screens/
+            // runtime/rating_10 from every .csv/.xlsx file in legacycsv.folder, for existing
+            // Hindi movies matched by title only (no year in the source files). Never creates
+            // new columns or rows.
             new LegacyCsvBackfillService().runOnce();
+        } else if ("--tamil-csv-import".equals(args[0])) {
+            // One-shot import of genre/runtime/budget/revenue/rating_10/directors/
+            // production_companies/release_day from tamilcsv.files, matched by (movie_name,
+            // release year) — a real date is available here, unlike the Hindi CSVs — and every
+            // row's language is explicitly marked "tamil". Never creates new columns.
+            new TamilCsvImportService().runOnce();
         } else if ("--marketing-tactics-scan".equals(args[0])) {
             // Classify each movie's promotional campaign into the marketing tactic taxonomy via
             // AuraLLM (movies_data_collection + managed_entities, last 20 years), then repeat
@@ -184,6 +192,7 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --runtime-budget-scan                  # fill runtime/budget columns (sacnilk.com), repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --runtime-budget-scan-once             # run one runtime/budget enrichment cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --legacy-csv-import                     # backfill genre/release_event_type/revenue/budget/screens from legacycsv.folder, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --tamil-csv-import                      # import genre/runtime/budget/revenue/rating/directors from tamilcsv.files (language='tamil'), then exit");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-scan                # classify movies' marketing tactics via AuraLLM, repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-scan-once           # run one marketing-tactics classification cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-lookup \"Movie\" Language YYYY # print a movie's marketing tactics as JSON and exit");
