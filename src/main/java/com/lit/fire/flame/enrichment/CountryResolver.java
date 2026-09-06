@@ -19,8 +19,8 @@ public class CountryResolver {
             RESOLVER.put(code, new String[]{"IN", "India"});
         }
         for (String name : List.of("Hindi", "Kannada", "Telugu", "Tamil", "Malayalam", "Marathi",
-                "Bengali", "Punjabi", "Gujarati", "Odia", "Bhojpuri", "Assamese",
-                "Maithili", "Konkani", "Sanskrit")) {
+                "Bengali", "Punjabi", "Gujarati", "Odia", "Oriya", "Bhojpuri", "Assamese",
+                "Maithili", "Konkani", "Sanskrit", "Rajasthani", "Rajastani")) {
             RESOLVER.put(name.toLowerCase(), new String[]{"IN", "India"});
         }
 

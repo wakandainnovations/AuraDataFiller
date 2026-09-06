@@ -9,6 +9,7 @@ import com.lit.fire.flame.credits.CreditsCrawlerService;
 import com.lit.fire.flame.enrichment.EconomicEnrichmentService;
 import com.lit.fire.flame.legacycsv.LegacyCsvBackfillService;
 import com.lit.fire.flame.marketing.MarketingTacticsService;
+import com.lit.fire.flame.releaseevent.ReleaseEventService;
 import com.lit.fire.flame.tamilcsv.TamilCsvImportService;
 import com.lit.fire.flame.runtimebudget.RuntimeBudgetCrawlerService;
 import com.lit.fire.flame.youtube.YoutubeEnrichmentService;
@@ -99,6 +100,22 @@ public class App {
                 System.exit(1);
             }
             new MarketingTacticsService().printLookup(args[1], args[2], args[3]);
+        } else if ("--release-event-scan".equals(args[0])) {
+            // Classify each Indian-language row's release_event_type/name/detail (Holiday/
+            // Festival/Election/Cricket World Cup/Football World Cup/Normal) via AuraLLM, based
+            // on release_date +/- 7 days, country resolved from language, and (for languages
+            // with one) that language's home state's elections, most recently released first,
+            // then repeat.
+            new ReleaseEventService().run();
+        } else if ("--release-event-scan-once".equals(args[0])) {
+            // Run one release-event classification cycle and exit.
+            new ReleaseEventService().runOnce();
+        } else if ("--release-event-recheck-normal".equals(args[0])) {
+            // Re-examine every row currently classified "Normal" or still unclassified against
+            // the full taxonomy (added after some rows were first classified: Cricket/Football
+            // World Cup, state-election awareness), overwriting only rows no longer "Normal",
+            // then exit.
+            new ReleaseEventService().runRecheckNormalOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -114,6 +131,7 @@ public class App {
             startDaemonCreditsService();
             startDaemonRuntimeBudgetService();
             startDaemonMarketingTacticsService();
+            startDaemonReleaseEventService();
             if (args.length < 2) {
                 System.err.println("--watch requires a folder path.");
                 printUsage();
@@ -172,6 +190,12 @@ public class App {
         t.start();
     }
 
+    private static void startDaemonReleaseEventService() {
+        Thread t = new Thread(new ReleaseEventService(), "release-event-classifier");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static void printUsage() {
         System.err.println("Usage:");
         System.err.println("  java -jar AuraDataFiller.jar <path-to-csv-file>");
@@ -196,5 +220,8 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-scan                # classify movies' marketing tactics via AuraLLM, repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-scan-once           # run one marketing-tactics classification cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-lookup \"Movie\" Language YYYY # print a movie's marketing tactics as JSON and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --release-event-scan                    # classify release_event_type/name/detail (Indian-language movies) via AuraLLM, repeat");
+        System.err.println("  java -jar AuraDataFiller.jar --release-event-scan-once               # run one release-event classification cycle and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --release-event-recheck-normal          # re-examine rows classified 'Normal' or unclassified against the current taxonomy, then exit");
     }
 }
