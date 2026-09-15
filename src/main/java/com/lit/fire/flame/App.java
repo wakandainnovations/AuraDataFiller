@@ -7,8 +7,13 @@ import com.lit.fire.flame.crawler.BoxOfficeCrawlerOrchestrator;
 import com.lit.fire.flame.crawler.SacnilkCrawlerService;
 import com.lit.fire.flame.credits.CreditsCrawlerService;
 import com.lit.fire.flame.enrichment.EconomicEnrichmentService;
+import com.lit.fire.flame.indiamovies.IndiaMoviesCopyService;
+import com.lit.fire.flame.indiamovies.IndiaMoviesImportService;
+import com.lit.fire.flame.kannadabudget.KannadaBudgetBackfillService;
+import com.lit.fire.flame.languageid.LanguageIdService;
 import com.lit.fire.flame.legacycsv.LegacyCsvBackfillService;
 import com.lit.fire.flame.marketing.MarketingTacticsService;
+import com.lit.fire.flame.moviedetails.MovieDetailsService;
 import com.lit.fire.flame.releaseevent.ReleaseEventService;
 import com.lit.fire.flame.tamilcsv.TamilCsvImportService;
 import com.lit.fire.flame.runtimebudget.RuntimeBudgetCrawlerService;
@@ -84,6 +89,23 @@ public class App {
             // release year) — a real date is available here, unlike the Hindi CSVs — and every
             // row's language is explicitly marked "tamil". Never creates new columns.
             new TamilCsvImportService().runOnce();
+        } else if ("--kannada-budget-import".equals(args[0])) {
+            // One-shot backfill of budget/revenue (USD) for Kannada movies from a single
+            // mtwikiblog.com article covering 2022/2023/2026 Karnataka-territory box office.
+            // Existing rows already in a non-Kannada language are left untouched; 'unknown'
+            // rows are relabelled to 'kannada'; movies with no DB entry at all are inserted as
+            // new 'kannada' rows (release_date via AuraLLM, falling back to Jan 1 of the
+            // article's section year) — including any pan-India film on the article not yet
+            // otherwise in the DB, per explicit instruction.
+            new KannadaBudgetBackfillService().runOnce();
+        } else if ("--language-id-scan".equals(args[0])) {
+            // Identify language for movies_data_collection rows currently language='unknown'
+            // via AuraLLM, in bounded batches (languageid.batch.size), repeating every 24 h.
+            new LanguageIdService().run();
+        } else if ("--language-id-scan-once".equals(args[0])) {
+            // Run one language-identification batch and exit. Call repeatedly (or use
+            // --language-id-scan / --watch) to work through the full unknown-language backlog.
+            new LanguageIdService().runOnce();
         } else if ("--marketing-tactics-scan".equals(args[0])) {
             // Classify each movie's promotional campaign into the marketing tactic taxonomy via
             // AuraLLM (movies_data_collection + managed_entities, last 20 years), then repeat
@@ -116,6 +138,27 @@ public class App {
             // World Cup, state-election awareness), overwriting only rows no longer "Normal",
             // then exit.
             new ReleaseEventService().runRecheckNormalOnce();
+        } else if ("--movie-details-scan".equals(args[0])) {
+            // Fill rating_10/runtime/genre/country/production_companies/directors/cbfc_rating
+            // from the real TMDB API, most recently released first, then repeat (see
+            // moviedetails.interval.hours).
+            new MovieDetailsService().run();
+        } else if ("--movie-details-scan-once".equals(args[0])) {
+            // Run one movie-details enrichment cycle and exit.
+            new MovieDetailsService().runOnce();
+        } else if ("--india-movies-import-once".equals(args[0])) {
+            // One-shot: import every India-origin movie TMDB has on file (indiamovies.year.from
+            // to indiamovies.year.to) with both a non-zero budget AND revenue into a brand-new
+            // india_movies_data_collection table (exact schema mirror of movies_data_collection),
+            // keyed by (movie_name, release_date, language). Never touches movies_data_collection.
+            new IndiaMoviesImportService().runOnce();
+        } else if ("--india-movies-copy-once".equals(args[0])) {
+            // One-shot: copies every Indian-language row already sitting in
+            // movies_data_collection (filled by this app's other backfill services) into
+            // india_movies_data_collection, for every movie whose movie_name isn't already
+            // there and whose budget AND revenue are both non-zero. Plain SQL copy — no TMDB
+            // calls, no rate limit. Safe to re-run.
+            new IndiaMoviesCopyService().runOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -132,6 +175,8 @@ public class App {
             startDaemonRuntimeBudgetService();
             startDaemonMarketingTacticsService();
             startDaemonReleaseEventService();
+            startDaemonLanguageIdService();
+            startDaemonMovieDetailsService();
             if (args.length < 2) {
                 System.err.println("--watch requires a folder path.");
                 printUsage();
@@ -196,6 +241,18 @@ public class App {
         t.start();
     }
 
+    private static void startDaemonLanguageIdService() {
+        Thread t = new Thread(new LanguageIdService(), "language-id-classifier");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private static void startDaemonMovieDetailsService() {
+        Thread t = new Thread(new MovieDetailsService(), "movie-details-enrichment");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static void printUsage() {
         System.err.println("Usage:");
         System.err.println("  java -jar AuraDataFiller.jar <path-to-csv-file>");
@@ -217,11 +274,18 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --runtime-budget-scan-once             # run one runtime/budget enrichment cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --legacy-csv-import                     # backfill genre/release_event_type/revenue/budget/screens from legacycsv.folder, then exit");
         System.err.println("  java -jar AuraDataFiller.jar --tamil-csv-import                      # import genre/runtime/budget/revenue/rating/directors from tamilcsv.files (language='tamil'), then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --kannada-budget-import                 # backfill budget/revenue (USD) for Kannada movies from mtwikiblog.com, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --language-id-scan                      # identify language for language='unknown' rows via AuraLLM, in batches, repeat every 24 h");
+        System.err.println("  java -jar AuraDataFiller.jar --language-id-scan-once                 # run one language-identification batch and exit");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-scan                # classify movies' marketing tactics via AuraLLM, repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-scan-once           # run one marketing-tactics classification cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-lookup \"Movie\" Language YYYY # print a movie's marketing tactics as JSON and exit");
         System.err.println("  java -jar AuraDataFiller.jar --release-event-scan                    # classify release_event_type/name/detail (Indian-language movies) via AuraLLM, repeat");
         System.err.println("  java -jar AuraDataFiller.jar --release-event-scan-once               # run one release-event classification cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --release-event-recheck-normal          # re-examine rows classified 'Normal' or unclassified against the current taxonomy, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --movie-details-scan                    # fill rating_10/runtime/genre/country/production_companies/directors/cbfc_rating from TMDB, repeat");
+        System.err.println("  java -jar AuraDataFiller.jar --movie-details-scan-once               # run one movie-details enrichment cycle and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --india-movies-import-once              # import India-origin TMDB movies with budget+revenue into india_movies_data_collection, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --india-movies-copy-once                # copy Indian-language movies_data_collection rows (budget+revenue non-zero, movie_name not already present) into india_movies_data_collection, then exit");
     }
 }
