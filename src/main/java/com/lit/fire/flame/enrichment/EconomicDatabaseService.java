@@ -21,10 +21,24 @@ public class EconomicDatabaseService implements AutoCloseable {
 
     private final Connection connection;
     private final String tableName;
+    /** SQL predicate selecting candidate rows: the Indian-language filter, or TRUE when every row is Indian. */
+    private final String indianRowFilter;
 
     public EconomicDatabaseService(String url, String user, String password,
                                     String tableName) throws SQLException {
+        this(url, user, password, tableName, false);
+    }
+
+    /**
+     * @param allRowsIndian when true (e.g. india_movies_data_collection, whose rows are all
+     *                      Indian movies), skip the language filter — that table's "language"
+     *                      values include multi-language/code forms ("kannada, telugu", "as")
+     *                      that the single-language list would miss.
+     */
+    public EconomicDatabaseService(String url, String user, String password,
+                                    String tableName, boolean allRowsIndian) throws SQLException {
         this.tableName  = tableName;
+        this.indianRowFilter = allRowsIndian ? "TRUE" : "LOWER(\"language\") IN " + INDIAN_LANGUAGES_SQL;
         this.connection = DriverManager.getConnection(url, user, password);
         this.connection.setAutoCommit(false);
     }
@@ -62,7 +76,7 @@ public class EconomicDatabaseService implements AutoCloseable {
             " WHERE release_date IS NOT NULL AND LEFT(release_date, 4) ~ '^[0-9]{4}$' " +
             "   AND LEFT(release_date, 4)::int > 2000 " +
             "   AND LEFT(release_date, 4)::int <= EXTRACT(YEAR FROM CURRENT_DATE)::int " +
-            "   AND LOWER(\"language\") IN " + INDIAN_LANGUAGES_SQL + " " +
+            "   AND " + indianRowFilter + " " +
             "   AND (COALESCE(" + q(ColumnMapper.GDP_COL) + ", 0) = 0 " +
             "     OR COALESCE(" + q(ColumnMapper.INFLATION_COL) + ", 0) = 0) " +
             "ORDER BY yr DESC";
@@ -78,7 +92,7 @@ public class EconomicDatabaseService implements AutoCloseable {
     public int countIndianMoviesForYear(int year) throws SQLException {
         String sql =
             "SELECT COUNT(*) FROM " + q(tableName) +
-            " WHERE LEFT(release_date, 4) = ? AND LOWER(\"language\") IN " + INDIAN_LANGUAGES_SQL;
+            " WHERE LEFT(release_date, 4) = ? AND " + indianRowFilter;
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, String.valueOf(year));
             try (ResultSet rs = ps.executeQuery()) {
@@ -102,7 +116,7 @@ public class EconomicDatabaseService implements AutoCloseable {
             "THEN ? ELSE " + q(ColumnMapper.GDP_COL) + " END, " +
             q(ColumnMapper.INFLATION_COL) + " = CASE WHEN ? IS NOT NULL AND COALESCE(" + q(ColumnMapper.INFLATION_COL) + ", 0) = 0 " +
             "THEN ? ELSE " + q(ColumnMapper.INFLATION_COL) + " END " +
-            "WHERE LEFT(\"release_date\", 4) = ? AND LOWER(\"language\") IN " + INDIAN_LANGUAGES_SQL;
+            "WHERE LEFT(\"release_date\", 4) = ? AND " + indianRowFilter;
 
         int updated;
         try (PreparedStatement ps = connection.prepareStatement(sql)) {

@@ -61,8 +61,10 @@ public class App {
             new YoutubeEnrichmentService().runOnceForMovie(args[1], args[2]);
         } else if ("--econ-scan-once".equals(args[0])) {
             // Backfill gdp_usd_billions/inflation_rate_pct (World Bank API) for existing rows:
-            // Indian-language movies released after 2000. One-shot, then exit.
-            new EconomicEnrichmentService().runOnce();
+            // Indian-language movies released after 2000. One-shot, then exit. An optional table
+            // argument (e.g. india_movies_data_collection) targets that table instead, treating
+            // every row in it as an Indian movie.
+            new EconomicEnrichmentService().runOnce(args.length > 1 ? args[1] : null);
         } else if ("--credits-scan".equals(args[0])) {
             // Fill "directors"/"production_companies" columns (sacnilk.com) for Indian-language
             // movies released after 2000, then repeat every 24 h.
@@ -267,7 +269,7 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --youtube-scan                          # search YouTube for trailer/teaser/song data, repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --youtube-scan-once                     # run one YouTube enrichment cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --youtube-scan-movie \"Movie Name\" YYYY  # test enrichment for one movie and exit");
-        System.err.println("  java -jar AuraDataFiller.jar --econ-scan-once                        # backfill GDP/inflation for Indian movies released after 2000, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --econ-scan-once [table]                # backfill GDP/inflation for Indian movies released after 2000 (optionally in [table], all rows treated as Indian), then exit");
         System.err.println("  java -jar AuraDataFiller.jar --credits-scan                         # fill directors/production_companies columns (sacnilk.com), repeat every 24 h");
         System.err.println("  java -jar AuraDataFiller.jar --credits-scan-once                    # run one directors/production_companies enrichment cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --runtime-budget-scan                  # fill runtime/budget columns (sacnilk.com), repeat every 24 h");

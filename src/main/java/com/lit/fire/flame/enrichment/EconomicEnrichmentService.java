@@ -25,18 +25,29 @@ public class EconomicEnrichmentService {
 
     /** Runs one backfill cycle synchronously, then returns. Intended for --econ-scan-once. */
     public void runOnce() throws Exception {
+        runOnce(null);
+    }
+
+    /**
+     * Same as {@link #runOnce()}, but against {@code tableOverride} instead of table.name when
+     * non-null. An override table is assumed to hold only Indian movies (e.g.
+     * india_movies_data_collection), so the Indian-language filter is skipped.
+     */
+    public void runOnce(String tableOverride) throws Exception {
         Properties secrets = loadProperties("secrets.properties", true);
         Properties config  = loadProperties("application.properties", false);
 
         String dbUrl      = secrets.getProperty("db.url");
         String dbUser     = secrets.getProperty("db.user");
         String dbPassword = secrets.getProperty("db.password", "");
-        String tableName  = config.getProperty("table.name", "movies_data_collection");
+        boolean allRowsIndian = tableOverride != null;
+        String tableName  = allRowsIndian ? tableOverride
+                                          : config.getProperty("table.name", "movies_data_collection");
 
-        log("=== Starting GDP/inflation backfill for Indian-language movies released after 2000 ===");
+        log("=== Starting GDP/inflation backfill for Indian movies released after 2000 in " + tableName + " ===");
 
         List<Integer> years;
-        try (EconomicDatabaseService db = new EconomicDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
+        try (EconomicDatabaseService db = new EconomicDatabaseService(dbUrl, dbUser, dbPassword, tableName, allRowsIndian)) {
             db.ensureColumnsExist();
             years = db.getYearsNeedingEnrichment();
         }
@@ -71,7 +82,7 @@ public class EconomicEnrichmentService {
                 continue;
             }
 
-            try (EconomicDatabaseService db = new EconomicDatabaseService(dbUrl, dbUser, dbPassword, tableName)) {
+            try (EconomicDatabaseService db = new EconomicDatabaseService(dbUrl, dbUser, dbPassword, tableName, allRowsIndian)) {
                 int updated = db.updateYearIfMissing(year, gdp, inflation);
                 totalRowsUpdated += updated;
                 yearsDone++;
