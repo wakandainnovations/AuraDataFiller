@@ -132,8 +132,10 @@ public class App {
             // then repeat.
             new ReleaseEventService().run();
         } else if ("--release-event-scan-once".equals(args[0])) {
-            // Run one release-event classification cycle and exit.
-            new ReleaseEventService().runOnce();
+            // Run one release-event classification cycle and exit. An optional table argument
+            // (e.g. india_movies_data_collection) targets that table instead, treating every row
+            // in it as an Indian movie, and repeats cycles until its backlog is drained.
+            new ReleaseEventService().runOnce(args.length > 1 ? args[1] : null);
         } else if ("--release-event-recheck-normal".equals(args[0])) {
             // Re-examine every row currently classified "Normal" or still unclassified against
             // the full taxonomy (added after some rows were first classified: Cricket/Football
@@ -283,7 +285,7 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-scan-once           # run one marketing-tactics classification cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --marketing-tactics-lookup \"Movie\" Language YYYY # print a movie's marketing tactics as JSON and exit");
         System.err.println("  java -jar AuraDataFiller.jar --release-event-scan                    # classify release_event_type/name/detail (Indian-language movies) via AuraLLM, repeat");
-        System.err.println("  java -jar AuraDataFiller.jar --release-event-scan-once               # run one release-event classification cycle and exit");
+        System.err.println("  java -jar AuraDataFiller.jar --release-event-scan-once [table]       # run one release-event classification cycle and exit (with [table]: classify every row in it, all treated as Indian)");
         System.err.println("  java -jar AuraDataFiller.jar --release-event-recheck-normal          # re-examine rows classified 'Normal' or unclassified against the current taxonomy, then exit");
         System.err.println("  java -jar AuraDataFiller.jar --movie-details-scan                    # fill rating_10/runtime/genre/country/production_companies/directors/cbfc_rating from TMDB, repeat");
         System.err.println("  java -jar AuraDataFiller.jar --movie-details-scan-once               # run one movie-details enrichment cycle and exit");

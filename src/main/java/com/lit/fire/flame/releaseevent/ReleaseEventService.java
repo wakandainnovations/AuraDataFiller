@@ -72,11 +72,35 @@ public class ReleaseEventService implements Runnable {
         Map.entry("kashmiri",   "Jammu and Kashmir")
     );
 
-    /** Returns the Indian state associated with a language, or null when there isn't one clear match. */
+    /** ISO 639 codes (as india_movies_data_collection stores some languages) -> the names above. */
+    private static final Map<String, String> LANGUAGE_NAME_BY_CODE = Map.ofEntries(
+        Map.entry("ta",  "tamil"),
+        Map.entry("kn",  "kannada"),
+        Map.entry("tcy", "tulu"),
+        Map.entry("ml",  "malayalam"),
+        Map.entry("te",  "telugu"),
+        Map.entry("mr",  "marathi"),
+        Map.entry("bn",  "bengali"),
+        Map.entry("pa",  "punjabi"),
+        Map.entry("gu",  "gujarati"),
+        Map.entry("or",  "odia"),
+        Map.entry("as",  "assamese"),
+        Map.entry("bho", "bhojpuri"),
+        Map.entry("kok", "konkani"),
+        Map.entry("ks",  "kashmiri")
+    );
+
+    /**
+     * Returns the Indian state associated with a language, or null when there isn't one clear
+     * match. A multi-language value ("kannada, telugu") uses its first (primary) language.
+     */
     private static String indianStateFor(String language) {
         if (language == null) return null;
-        return INDIAN_STATE_BY_LANGUAGE.get(language.trim().toLowerCase());
+        String primary = language.split(",")[0].trim().toLowerCase();
+        return INDIAN_STATE_BY_LANGUAGE.get(LANGUAGE_NAME_BY_CODE.getOrDefault(primary, primary));
     }
+
+    private static final String[] INDIA = {"IN", "India"};
 
     /** A tournament/election's real date span, used as ground truth instead of trusting the LLM's recall of dates. */
     private record DateWindow(LocalDate start, LocalDate end, String name) {
@@ -99,7 +123,8 @@ public class ReleaseEventService implements Runnable {
         Map.entry("Tamil Nadu", List.of(
             new DateWindow(LocalDate.of(2011, 4, 13), LocalDate.of(2011, 5, 13), "2011 Tamil Nadu Assembly Election"),
             new DateWindow(LocalDate.of(2016, 5, 16), LocalDate.of(2016, 5, 19), "2016 Tamil Nadu Assembly Election"),
-            new DateWindow(LocalDate.of(2021, 4, 6),  LocalDate.of(2021, 5, 2),  "2021 Tamil Nadu Assembly Election"))),
+            new DateWindow(LocalDate.of(2021, 4, 6),  LocalDate.of(2021, 5, 2),  "2021 Tamil Nadu Assembly Election"),
+            new DateWindow(LocalDate.of(2026, 4, 23), LocalDate.of(2026, 5, 4),  "2026 Tamil Nadu Assembly Election"))),
         Map.entry("Karnataka", List.of(
             new DateWindow(LocalDate.of(2013, 5, 5),  LocalDate.of(2013, 5, 8),  "2013 Karnataka Assembly Election"),
             new DateWindow(LocalDate.of(2018, 5, 12), LocalDate.of(2018, 5, 15), "2018 Karnataka Assembly Election"),
@@ -107,7 +132,8 @@ public class ReleaseEventService implements Runnable {
         Map.entry("Kerala", List.of(
             new DateWindow(LocalDate.of(2011, 4, 13), LocalDate.of(2011, 5, 13), "2011 Kerala Assembly Election"),
             new DateWindow(LocalDate.of(2016, 5, 16), LocalDate.of(2016, 5, 19), "2016 Kerala Assembly Election"),
-            new DateWindow(LocalDate.of(2021, 4, 6),  LocalDate.of(2021, 5, 2),  "2021 Kerala Assembly Election"))),
+            new DateWindow(LocalDate.of(2021, 4, 6),  LocalDate.of(2021, 5, 2),  "2021 Kerala Assembly Election"),
+            new DateWindow(LocalDate.of(2026, 4, 9),  LocalDate.of(2026, 5, 4),  "2026 Kerala Assembly Election"))),
         Map.entry("Maharashtra", List.of(
             new DateWindow(LocalDate.of(2014, 10, 15), LocalDate.of(2014, 10, 19), "2014 Maharashtra Assembly Election"),
             new DateWindow(LocalDate.of(2019, 10, 21), LocalDate.of(2019, 10, 24), "2019 Maharashtra Assembly Election"),
@@ -115,7 +141,8 @@ public class ReleaseEventService implements Runnable {
         Map.entry("West Bengal", List.of(
             new DateWindow(LocalDate.of(2011, 4, 18), LocalDate.of(2011, 5, 13), "2011 West Bengal Assembly Election"),
             new DateWindow(LocalDate.of(2016, 4, 4),  LocalDate.of(2016, 5, 19), "2016 West Bengal Assembly Election"),
-            new DateWindow(LocalDate.of(2021, 3, 27), LocalDate.of(2021, 5, 2),  "2021 West Bengal Assembly Election"))),
+            new DateWindow(LocalDate.of(2021, 3, 27), LocalDate.of(2021, 5, 2),  "2021 West Bengal Assembly Election"),
+            new DateWindow(LocalDate.of(2026, 4, 23), LocalDate.of(2026, 5, 4),  "2026 West Bengal Assembly Election"))),
         Map.entry("Punjab", List.of(
             new DateWindow(LocalDate.of(2012, 1, 30), LocalDate.of(2012, 3, 6),  "2012 Punjab Assembly Election"),
             new DateWindow(LocalDate.of(2017, 2, 4),  LocalDate.of(2017, 3, 11), "2017 Punjab Assembly Election"),
@@ -131,7 +158,8 @@ public class ReleaseEventService implements Runnable {
         Map.entry("Assam", List.of(
             new DateWindow(LocalDate.of(2011, 4, 4),  LocalDate.of(2011, 5, 13), "2011 Assam Assembly Election"),
             new DateWindow(LocalDate.of(2016, 4, 4),  LocalDate.of(2016, 5, 19), "2016 Assam Assembly Election"),
-            new DateWindow(LocalDate.of(2021, 3, 27), LocalDate.of(2021, 5, 2),  "2021 Assam Assembly Election"))),
+            new DateWindow(LocalDate.of(2021, 3, 27), LocalDate.of(2021, 5, 2),  "2021 Assam Assembly Election"),
+            new DateWindow(LocalDate.of(2026, 4, 9),  LocalDate.of(2026, 5, 4),  "2026 Assam Assembly Election"))),
         Map.entry("Bihar", List.of(
             new DateWindow(LocalDate.of(2015, 10, 12), LocalDate.of(2015, 11, 8),  "2015 Bihar Assembly Election"),
             new DateWindow(LocalDate.of(2020, 10, 28), LocalDate.of(2020, 11, 10), "2020 Bihar Assembly Election"),
@@ -285,7 +313,7 @@ public class ReleaseEventService implements Runnable {
 
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                runCycle(secrets, config);
+                runCycle(secrets, config, null);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -302,9 +330,26 @@ public class ReleaseEventService implements Runnable {
 
     /** Runs exactly one classification cycle synchronously, then returns. For --release-event-scan-once. */
     public void runOnce() throws Exception {
+        runOnce(null);
+    }
+
+    /**
+     * Same as {@link #runOnce()}, but against {@code tableOverride} instead of table.name when
+     * non-null. An override table is assumed to hold only Indian movies (e.g.
+     * india_movies_data_collection), so the Indian-language filter is skipped and every row's
+     * country is India. Unlike the default single cycle, this repeats cycles until the table's
+     * backlog is drained (or a cycle classifies nothing, e.g. AuraLLM is down).
+     */
+    public void runOnce(String tableOverride) throws Exception {
         Properties secrets = loadProperties("secrets.properties", true);
         Properties config  = loadProperties("application.properties", false);
-        runCycle(secrets, config);
+        if (tableOverride == null) {
+            runCycle(secrets, config, null);
+            return;
+        }
+        while (runCycle(secrets, config, tableOverride) > 0) {
+            // keep going: getCandidates excludes rows classified/checked in earlier cycles
+        }
     }
 
     /**
@@ -424,13 +469,20 @@ public class ReleaseEventService implements Runnable {
 
     // ---- cycle ----
 
-    private void runCycle(Properties secrets, Properties config) throws Exception {
-        log("=== Starting release-event classification cycle ===");
-
+    /**
+     * @param tableOverride table to scan instead of table.name, with every row treated as Indian
+     *                      (see {@link #runOnce(String)}), or null
+     * @return number of rows classified this cycle
+     */
+    private int runCycle(Properties secrets, Properties config, String tableOverride) throws Exception {
         String dbUrl      = secrets.getProperty("db.url");
         String dbUser     = secrets.getProperty("db.user");
         String dbPassword = secrets.getProperty("db.password", "");
-        String moviesTable = config.getProperty("table.name", "movies_data_collection");
+        boolean allRowsIndian = tableOverride != null;
+        String moviesTable = allRowsIndian ? tableOverride
+                                           : config.getProperty("table.name", "movies_data_collection");
+
+        log("=== Starting release-event classification cycle for " + moviesTable + " ===");
 
         String llmUrl        = config.getProperty("llm.url", "http://localhost:1025/api/chat");
         int    llmTimeoutSec = Integer.parseInt(config.getProperty("releaseevent.llm.timeout.seconds", "60"));
@@ -439,10 +491,10 @@ public class ReleaseEventService implements Runnable {
         int    recheckDays   = Integer.parseInt(config.getProperty("releaseevent.recheck.interval.days", "180"));
 
         List<ReleaseEventDatabaseService.Candidate> candidates;
-        try (ReleaseEventDatabaseService db = new ReleaseEventDatabaseService(dbUrl, dbUser, dbPassword, moviesTable)) {
+        try (ReleaseEventDatabaseService db = new ReleaseEventDatabaseService(dbUrl, dbUser, dbPassword, moviesTable, allRowsIndian)) {
             if (!db.tableExists()) {
                 log("Table '" + moviesTable + "' does not yet exist — skipping cycle.");
-                return;
+                return 0;
             }
             db.ensureColumnsExist();
             candidates = db.getCandidates(batchSize, recheckDays);
@@ -454,7 +506,7 @@ public class ReleaseEventService implements Runnable {
 
         if (candidates.isEmpty()) {
             log("Nothing to do — every eligible row was already classified within the recheck window.");
-            return;
+            return 0;
         }
 
         CountryResolver countryResolver = new CountryResolver();
@@ -466,12 +518,12 @@ public class ReleaseEventService implements Runnable {
         int classified = 0, cacheHits = 0, unresolvedCountry = 0, errors = 0;
         long lastRequestAt = 0;
 
-        try (ReleaseEventDatabaseService db = new ReleaseEventDatabaseService(dbUrl, dbUser, dbPassword, moviesTable)) {
+        try (ReleaseEventDatabaseService db = new ReleaseEventDatabaseService(dbUrl, dbUser, dbPassword, moviesTable, allRowsIndian)) {
             for (int idx = 0; idx < candidates.size(); idx++) {
                 ReleaseEventDatabaseService.Candidate c = candidates.get(idx);
                 String progress = String.format("[%d/%d]", idx + 1, candidates.size());
 
-                String[] country = countryResolver.resolve(c.language());
+                String[] country = allRowsIndian ? INDIA : countryResolver.resolve(c.language());
                 if (country == null) {
                     unresolvedCountry++;
                     db.markChecked(c.movieName(), c.releaseDate(), c.language(), today);
@@ -523,6 +575,7 @@ public class ReleaseEventService implements Runnable {
             "=== Cycle complete — candidates: %,d | classified: %,d | AuraLLM calls saved by cache: %,d | " +
             "unresolved country: %,d | errors: %,d (rechecked in %d day(s)) ===",
             candidates.size(), classified, cacheHits, unresolvedCountry, errors, recheckDays));
+        return classified;
     }
 
     /** @param indianState home state for the movie's language (see {@link #indianStateFor}), or null */

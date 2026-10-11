@@ -24,10 +24,24 @@ public class ReleaseEventDatabaseService implements AutoCloseable {
 
     private final Connection connection;
     private final String tableName;
+    /** SQL predicate selecting candidate rows: the Indian-language filter, or TRUE when every row is Indian. */
+    private final String indianRowFilter;
 
     public ReleaseEventDatabaseService(String url, String user, String password,
                                         String tableName) throws SQLException {
+        this(url, user, password, tableName, false);
+    }
+
+    /**
+     * @param allRowsIndian when true (e.g. india_movies_data_collection, whose rows are all
+     *                      Indian movies), skip the language filter — that table's "language"
+     *                      values include multi-language/code forms ("kannada, telugu", "as")
+     *                      that the single-language list would miss.
+     */
+    public ReleaseEventDatabaseService(String url, String user, String password,
+                                        String tableName, boolean allRowsIndian) throws SQLException {
         this.tableName  = tableName;
+        this.indianRowFilter = allRowsIndian ? "TRUE" : "LOWER(\"language\") IN " + INDIAN_LANGUAGES_SQL;
         this.connection = DriverManager.getConnection(url, user, password);
         this.connection.setAutoCommit(false);
     }
@@ -85,7 +99,7 @@ public class ReleaseEventDatabaseService implements AutoCloseable {
             "FROM " + q(tableName) + " " +
             "WHERE \"release_date\" ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' " +
             "  AND \"release_date\"::date <= CURRENT_DATE " +
-            "  AND LOWER(\"language\") IN " + INDIAN_LANGUAGES_SQL + " " +
+            "  AND " + indianRowFilter + " " +
             "  AND COALESCE(" + q(ColumnMapper.EVENT_TYPE_COL) + ", '') = '' " +
             "  AND (" + q(LAST_CHECKED_COL) + " IS NULL OR " + q(LAST_CHECKED_COL) + "::date < CURRENT_DATE - ?::int) " +
             "ORDER BY \"release_date\" DESC, \"movie_name\" " +
@@ -149,7 +163,7 @@ public class ReleaseEventDatabaseService implements AutoCloseable {
             "FROM " + q(tableName) + " " +
             "WHERE \"release_date\" ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' " +
             "  AND \"release_date\"::date <= CURRENT_DATE " +
-            "  AND LOWER(\"language\") IN " + INDIAN_LANGUAGES_SQL + " " +
+            "  AND " + indianRowFilter + " " +
             "  AND COALESCE(" + q(ColumnMapper.EVENT_TYPE_COL) + ", '') IN ('', 'Normal') " +
             "ORDER BY \"release_date\" DESC, \"movie_name\" " +
             "LIMIT ?";

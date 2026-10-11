@@ -124,17 +124,20 @@ public class IndiaMoviesDatabaseService implements AutoCloseable {
      * (see {@code IndiaMoviesCopyService}) — full row, every already-filled column, not just the
      * TMDB-shaped subset {@link #upsert} writes — for movies whose (trimmed, case-insensitive)
      * movie_name isn't already present in the target table and whose budget AND revenue are
-     * both non-zero. A plain {@code INSERT ... SELECT s.*} is valid here because the target
-     * table is an exact {@code LIKE ... INCLUDING ALL} mirror of the source (identical columns,
-     * same order — see {@link #ensureTableExists}). {@code ON CONFLICT DO NOTHING} is a defensive
-     * no-op in the normal case (the NOT EXISTS clause already excludes movie_names on file), kept
-     * only as a safety net against a same-PK race.
+     * both non-zero. Columns are copied by name — only those present in both tables, excluding
+     * the target's generated columns (day_of_year/week_of_year, computed from release_date) —
+     * not {@code SELECT s.*}: the two tables started as a {@code LIKE ... INCLUDING ALL} mirror
+     * (see {@link #ensureTableExists}) but have since drifted (columns dropped from or added to
+     * only one side), so their column positions no longer line up. {@code ON CONFLICT DO NOTHING}
+     * is a defensive no-op in the normal case (the NOT EXISTS clause already excludes movie_names
+     * on file), kept only as a safety net against a same-PK race.
      *
      * @return the number of rows actually inserted
      */
     public int copyExistingIndianLanguageMovies() throws SQLException {
-        String sql = "INSERT INTO " + q(targetTable) + " " +
-            "SELECT s.* FROM " + q(sourceTable) + " s " +
+        String columns = sharedInsertableColumns();
+        String sql = "INSERT INTO " + q(targetTable) + " (" + columns + ") " +
+            "SELECT " + columns + " FROM " + q(sourceTable) + " s " +
             "WHERE LOWER(s.\"language\") IN " + INDIAN_LANGUAGES_SQL + " " +
             "  AND s.\"budget\" > 0 AND s.\"revenue\" > 0 " +
             "  AND NOT EXISTS (" +
@@ -148,6 +151,34 @@ public class IndiaMoviesDatabaseService implements AutoCloseable {
         }
         connection.commit();
         return inserted;
+    }
+
+    /**
+     * Quoted, comma-separated list of columns that exist in both source and target tables and
+     * aren't generated in the target (Postgres rejects explicit writes to generated columns),
+     * in the target's column order.
+     */
+    private String sharedInsertableColumns() throws SQLException {
+        String sql = "SELECT t.column_name FROM information_schema.columns t " +
+            "JOIN information_schema.columns s " +
+            "  ON s.table_schema = t.table_schema AND s.table_name = ? AND s.column_name = t.column_name " +
+            "WHERE t.table_schema = 'public' AND t.table_name = ? AND t.is_generated = 'NEVER' " +
+            "ORDER BY t.ordinal_position";
+        StringBuilder columns = new StringBuilder();
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, sourceTable);
+            ps.setString(2, targetTable);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    if (columns.length() > 0) columns.append(", ");
+                    columns.append(q(rs.getString(1)));
+                }
+            }
+        }
+        if (columns.length() == 0) {
+            throw new SQLException("No shared columns between '" + sourceTable + "' and '" + targetTable + "'");
+        }
+        return columns.toString();
     }
 
     private static void setNumericOrNull(PreparedStatement ps, int index, Number value) throws SQLException {
