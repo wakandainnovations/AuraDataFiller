@@ -89,7 +89,13 @@ public class TmdbClient {
      * well past 40 req/s even with a per-candidate delay in place.
      */
     private final long minRequestIntervalMs;
-    private long lastRequestAtMs = 0;
+
+    /**
+     * Shared across every TmdbClient instance in this JVM (guarded by TmdbClient.class), so two
+     * TMDB-backed services running side by side still stay under TMDB's limit together rather
+     * than each separately — see {@link #throttle()}.
+     */
+    private static long lastRequestAtMs = 0;
 
     public TmdbClient(String bearerToken, String apiKeyV3, int timeoutSeconds, double matchThreshold,
                        double maxRequestsPerSecond) {
@@ -201,6 +207,11 @@ public class TmdbClient {
      * every candidate here still needs a details call — see {@link #fetchIndiaMovieRecord}).
      */
     public List<Integer> discoverIndianMovieIds(int year) throws Exception {
+        return discoverIndianMovieIds(year, year + "-12-31");
+    }
+
+    /** As {@link #discoverIndianMovieIds(int)}, but only up to {@code lastDate} (YYYY-MM-DD) within that year. */
+    public List<Integer> discoverIndianMovieIds(int year, String lastDate) throws Exception {
         List<Integer> ids = new ArrayList<>();
         int page = 1;
         int totalPages = 1;
@@ -208,7 +219,7 @@ public class TmdbClient {
             String url = API_BASE + "/discover/movie" +
                 "?with_origin_country=IN" +
                 "&primary_release_date.gte=" + year + "-01-01" +
-                "&primary_release_date.lte=" + year + "-12-31" +
+                "&primary_release_date.lte=" + lastDate +
                 "&sort_by=primary_release_date.asc" +
                 "&page=" + page;
             JsonNode root = get(url);
@@ -258,6 +269,105 @@ public class TmdbClient {
             budget, revenue, joinNames(root.path("production_companies")),
             directorsFrom(root.path("credits").path("crew")),
             cbfcRatingFrom(root.path("release_dates").path("results")));
+    }
+
+    /** TMDB crew jobs that credit a film's music director, most specific first (see {@link #musicDirectorsFrom}). */
+    private static final List<String> MUSIC_DIRECTOR_JOBS = List.of("Music Director", "Original Music Composer", "Music");
+
+    /**
+     * Fetches movie {@code tmdbId}'s details plus its top {@code leadCount} billed cast members,
+     * directors and music directors (one request, via append_to_response=credits). Used by the
+     * actors_data_collection lead-cast import (see com.lit.fire.flame.actor.TmdbActorImportService).
+     * Returns null when TMDB has no title or release date for it.
+     */
+    public TmdbMovieCredits fetchMovieCredits(int tmdbId, int leadCount) throws Exception {
+        JsonNode root = get(API_BASE + "/movie/" + tmdbId + "?append_to_response=credits");
+        String title = textOrNull(root.path("title"));
+        String releaseDate = textOrNull(root.path("release_date"));
+        if (title == null || releaseDate == null) return null;
+
+        // TMDB's "xx" means "no language".
+        String langCode = textOrNull(root.path("original_language"));
+        String language = langCode == null || "xx".equalsIgnoreCase(langCode)
+            ? null : columnMapper.expandLanguageCode(langCode);
+
+        Double rating = null;
+        Integer votes = null;
+        int voteCount = root.path("vote_count").asInt(0);
+        if (voteCount > 0 && root.hasNonNull("vote_average")) {
+            double v = root.path("vote_average").asDouble();
+            if (v > 0) {
+                rating = Math.round(v * 10.0) / 10.0;
+                votes = voteCount;
+            }
+        }
+
+        Integer runtime = null;
+        if (root.hasNonNull("runtime")) {
+            int r = root.path("runtime").asInt();
+            if (r > 0) runtime = r;
+        }
+
+        // Cast is already in billing order; re-sort defensively since "order" can have gaps.
+        List<JsonNode> cast = new ArrayList<>();
+        root.path("credits").path("cast").forEach(cast::add);
+        cast.sort(java.util.Comparator.comparingInt(c -> c.path("order").asInt(Integer.MAX_VALUE)));
+        List<TmdbMovieCredits.Lead> leads = new ArrayList<>();
+        for (JsonNode c : cast) {
+            if (leads.size() >= leadCount) break;
+            String name = textOrNull(c.path("name"));
+            if (name == null || !c.hasNonNull("id")) continue;
+            leads.add(new TmdbMovieCredits.Lead(c.path("id").asInt(), name, genderName(c.path("gender").asInt(0)),
+                leads.size() + 1, textOrNull(c.path("character"))));
+        }
+
+        JsonNode crew = root.path("credits").path("crew");
+        return new TmdbMovieCredits(tmdbId, title, textOrNull(root.path("original_title")), releaseDate,
+            language, joinNames(root.path("genres")), rating, votes, runtime, textOrNull(root.path("status")),
+            directorsFrom(crew), musicDirectorsFrom(crew), leads);
+    }
+
+    /** TMDB person {@code personId}'s birthday (YYYY-MM-DD), or null when TMDB doesn't have it. */
+    public String fetchBirthday(int personId) throws Exception {
+        return textOrNull(get(API_BASE + "/person/" + personId).path("birthday"));
+    }
+
+    private static String genderName(int tmdbGender) {
+        return switch (tmdbGender) {
+            case 1 -> "Female";
+            case 2 -> "Male";
+            case 3 -> "Non-binary";
+            default -> null;
+        };
+    }
+
+    /** The only music directors who work as a team; every other music director works individually. */
+    private static final String SHANKAR_EHSAAN_LOY = "Shankar Ehsan Loy";
+    private static final List<String> SHANKAR_EHSAAN_LOY_MEMBERS = List.of("shankar mahadevan", "ehsaan noorani", "loy mendonsa");
+
+    /**
+     * The film's music director: the first name credited under the most specific music job
+     * present (TMDB credits Indian films' composers inconsistently, often listing background-score
+     * composers alongside). The one exception is the Shankar Ehsaan Loy trio — credited either as
+     * one team entry or as at least two of its members — which is returned as the team name.
+     */
+    private static String musicDirectorsFrom(JsonNode crewArray) {
+        for (String job : MUSIC_DIRECTOR_JOBS) {
+            List<String> names = new ArrayList<>();
+            for (JsonNode member : crewArray) {
+                if (!job.equals(textOrNull(member.path("job")))) continue;
+                String name = textOrNull(member.path("name"));
+                if (name != null) names.add(name);
+            }
+            if (names.isEmpty()) continue;
+
+            long trioMembers = names.stream().map(n -> normalize(n).replace("ehsan", "ehsaan"))
+                .filter(SHANKAR_EHSAAN_LOY_MEMBERS::contains).distinct().count();
+            boolean trioAsTeam = names.stream().anyMatch(n -> normalize(n).matches("shankar ehs?aan loy"));
+            if (trioMembers >= 2 || trioAsTeam) return SHANKAR_EHSAAN_LOY;
+            return names.get(0);
+        }
+        return null;
     }
 
     // ---- TMDB HTTP calls ----
@@ -342,7 +452,7 @@ public class TmdbClient {
         return null;
     }
 
-    /** Retries on HTTP 429 (rate limit) up to this many additional times before giving up. */
+    /** Retries on HTTP 429 (rate limit) or a dropped connection up to this many additional times before giving up. */
     private static final int MAX_429_RETRIES = 5;
 
     private JsonNode get(String url) throws Exception {
@@ -365,6 +475,14 @@ public class TmdbClient {
                     .get(requestTimeout.toSeconds(), java.util.concurrent.TimeUnit.SECONDS);
             } catch (TimeoutException e) {
                 throw new Exception("TMDB request timed out after " + requestTimeout.toSeconds() + "s");
+            } catch (java.util.concurrent.ExecutionException e) {
+                // TMDB's HTTP/2 server periodically closes a connection (GOAWAY), failing every
+                // request in flight on it at once — transient, so retry on a fresh connection.
+                if (e.getCause() instanceof java.io.IOException && attempt < MAX_429_RETRIES) {
+                    Thread.sleep(1000L * (attempt + 1));
+                    continue;
+                }
+                throw e;
             }
 
             if (response.statusCode() == 429 && attempt < MAX_429_RETRIES) {
@@ -387,12 +505,12 @@ public class TmdbClient {
 
     // ---- name normalisation and similarity (mirrors CreditsCrawlerService/RuntimeBudgetCrawlerService) ----
 
-    static String normalize(String name) {
+    public static String normalize(String name) {
         if (name == null) return "";
         return name.toLowerCase().replaceAll("[^a-z0-9]+", " ").trim();
     }
 
-    static double similarity(String a, String b) {
+    public static double similarity(String a, String b) {
         if (a.isEmpty() || b.isEmpty()) return 0.0;
         if (a.equals(b)) return 1.0;
         int maxLen = Math.max(a.length(), b.length());
@@ -434,8 +552,14 @@ public class TmdbClient {
         return text.isEmpty() ? null : text;
     }
 
-    /** Blocks until at least {@link #minRequestIntervalMs} has elapsed since the previous HTTP call this client made. */
-    private synchronized void throttle() throws InterruptedException {
+    /** Blocks until at least {@link #minRequestIntervalMs} has elapsed since the previous HTTP call any TmdbClient made. */
+    private void throttle() throws InterruptedException {
+        synchronized (TmdbClient.class) {
+            throttleLocked();
+        }
+    }
+
+    private void throttleLocked() throws InterruptedException {
         long elapsed = System.currentTimeMillis() - lastRequestAtMs;
         if (lastRequestAtMs > 0 && elapsed < minRequestIntervalMs) {
             Thread.sleep(minRequestIntervalMs - elapsed);

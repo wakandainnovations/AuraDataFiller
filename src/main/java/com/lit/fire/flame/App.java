@@ -9,6 +9,8 @@ import com.lit.fire.flame.credits.CreditsCrawlerService;
 import com.lit.fire.flame.enrichment.EconomicEnrichmentService;
 import com.lit.fire.flame.indiamovies.IndiaMoviesCopyService;
 import com.lit.fire.flame.indiamovies.IndiaMoviesImportService;
+import com.lit.fire.flame.actor.TmdbActorImportService;
+import com.lit.fire.flame.directors.DirectorFillService;
 import com.lit.fire.flame.kannadabudget.KannadaBudgetBackfillService;
 import com.lit.fire.flame.languageid.LanguageIdService;
 import com.lit.fire.flame.legacycsv.LegacyCsvBackfillService;
@@ -163,6 +165,20 @@ public class App {
             // there and whose budget AND revenue are both non-zero. Plain SQL copy — no TMDB
             // calls, no rate limit. Safe to re-run.
             new IndiaMoviesCopyService().runOnce();
+        } else if ("--actor-tmdb-import-once".equals(args[0])) {
+            // One-shot: fill actors_data_collection with the top-billed cast (plus director and
+            // music director) of every India-origin TMDB movie released 2006 (or [fromYear]) to
+            // today (or [toYear]), updating matching existing rows with TMDB's values. Resumable;
+            // shares TMDB's rate limiter.
+            new TmdbActorImportService().runOnce(
+                args.length > 1 ? Integer.valueOf(args[1]) : null,
+                args.length > 2 ? Integer.valueOf(args[2]) : null);
+        } else if ("--director-fill-once".equals(args[0])) {
+            // One-shot: fill empty india_movies_data_collection.directors (by IMDb id) and
+            // actors_data_collection.director (by tmdb_movie_id) from Wikidata (exact id), then
+            // Wikipedia's yearly per-language film lists, never overwriting a director already on
+            // file. Safe to re-run.
+            new DirectorFillService().runOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -291,5 +307,7 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --movie-details-scan-once               # run one movie-details enrichment cycle and exit");
         System.err.println("  java -jar AuraDataFiller.jar --india-movies-import-once              # import India-origin TMDB movies with budget+revenue into india_movies_data_collection, then exit");
         System.err.println("  java -jar AuraDataFiller.jar --india-movies-copy-once                # copy Indian-language movies_data_collection rows (budget+revenue non-zero, movie_name not already present) into india_movies_data_collection, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --actor-tmdb-import-once [from] [to]    # fill actors_data_collection with lead cast + director/music director of India-origin TMDB movies 2006-today (or [from]-[to] years; resumable), then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --director-fill-once                     # fill empty directors in india_movies_data_collection (IMDb id) and actors_data_collection (TMDB id) from Wikidata, then Wikipedia film lists, then exit");
     }
 }

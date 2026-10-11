@@ -57,6 +57,7 @@ public class ColumnMapper {
         Map.entry("pa", "Punjabi"),
         Map.entry("gu", "Gujarati"),
         Map.entry("or", "Odia"),
+        Map.entry("as", "Assamese"),
         Map.entry("ur", "Urdu"),
         Map.entry("sa", "Sanskrit"),
         Map.entry("si", "Sinhala"),
