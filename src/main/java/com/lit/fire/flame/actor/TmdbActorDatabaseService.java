@@ -21,7 +21,7 @@ import java.util.Set;
 /**
  * Database operations for the TMDB lead-cast import (see TmdbActorImportService).
  *
- * Adds tmdb_person_id / tmdb_movie_id / gender / birthday / music_director to
+ * Adds tmdb_person_id / tmdb_movie_id / gender / birthday / music_director / music_composers to
  * actors_data_collection if missing, and keeps tmdb_actor_scan_movies (movies already imported)
  * so a long import can be interrupted and resumed.
  *
@@ -43,7 +43,7 @@ public class TmdbActorDatabaseService implements AutoCloseable {
     private static final String MOVIES_STATUS_TABLE = "tmdb_actor_scan_movies";
 
     private static final String SELECT_COLS =
-        "actor_name, movie_name, release_date, language, genre, director, music_director, rating, votes, " +
+        "actor_name, movie_name, release_date, language, genre, director, music_director, music_composers, rating, votes, " +
         "runtime, role_position, character_name, status, tmdb_person_id, tmdb_movie_id, gender, birthday";
 
     private final Connection connection;
@@ -60,7 +60,8 @@ public class TmdbActorDatabaseService implements AutoCloseable {
                 " ADD COLUMN IF NOT EXISTS tmdb_movie_id INTEGER," +
                 " ADD COLUMN IF NOT EXISTS gender TEXT," +
                 " ADD COLUMN IF NOT EXISTS birthday TEXT," +
-                " ADD COLUMN IF NOT EXISTS music_director TEXT");
+                " ADD COLUMN IF NOT EXISTS music_director TEXT," +
+                " ADD COLUMN IF NOT EXISTS music_composers TEXT");
             st.execute("CREATE INDEX IF NOT EXISTS idx_actors_data_lower_actor ON " + TABLE + " (lower(actor_name))");
             st.execute("CREATE INDEX IF NOT EXISTS idx_actors_data_tmdb_person ON " + TABLE + " (tmdb_person_id)");
             st.execute("CREATE TABLE IF NOT EXISTS " + MOVIES_STATUS_TABLE + " (" +
@@ -102,7 +103,7 @@ public class TmdbActorDatabaseService implements AutoCloseable {
 
     /** One actors_data_collection row; the PK fields of a loaded row identify it for the UPDATE. */
     private static final class Row {
-        String actorName, movieName, releaseDate, language, genre, director, musicDirector, runtime,
+        String actorName, movieName, releaseDate, language, genre, director, musicDirector, musicComposers, runtime,
             characterName, status, gender, birthday;
         BigDecimal rating, votes;
         Integer rolePosition, tmdbPersonId, tmdbMovieId;
@@ -145,6 +146,7 @@ public class TmdbActorDatabaseService implements AutoCloseable {
                     r.genre         = rs.getString("genre");
                     r.director      = rs.getString("director");
                     r.musicDirector = rs.getString("music_director");
+                    r.musicComposers = rs.getString("music_composers");
                     r.rating        = rs.getBigDecimal("rating");
                     r.votes         = rs.getBigDecimal("votes");
                     r.runtime       = rs.getString("runtime");
@@ -217,6 +219,7 @@ public class TmdbActorDatabaseService implements AutoCloseable {
         t.genre         = movie.genre();
         t.director      = movie.directors();
         t.musicDirector = movie.musicDirectors();
+        t.musicComposers = movie.musicComposers();
         t.rating        = movie.rating() != null ? BigDecimal.valueOf(movie.rating()) : null;
         t.votes         = movie.votes() != null ? BigDecimal.valueOf(movie.votes()) : null;
         t.runtime       = movie.runtimeMinutes() != null ? String.valueOf(movie.runtimeMinutes()) : null;
@@ -240,6 +243,7 @@ public class TmdbActorDatabaseService implements AutoCloseable {
         t.genre         = tmdb.genre != null ? tmdb.genre : existing.genre;
         t.director      = tmdb.director != null ? tmdb.director : existing.director;
         t.musicDirector = tmdb.musicDirector != null ? tmdb.musicDirector : existing.musicDirector;
+        t.musicComposers = tmdb.musicComposers != null ? tmdb.musicComposers : existing.musicComposers;
         t.rating        = tmdb.rating != null ? tmdb.rating : existing.rating;
         t.votes         = tmdb.votes != null ? tmdb.votes : existing.votes;
         t.runtime       = tmdb.runtime != null ? tmdb.runtime : existing.runtime;
@@ -259,6 +263,7 @@ public class TmdbActorDatabaseService implements AutoCloseable {
             && Objects.equals(a.genre, b.genre)
             && Objects.equals(a.director, b.director)
             && Objects.equals(a.musicDirector, b.musicDirector)
+            && Objects.equals(a.musicComposers, b.musicComposers)
             && numEquals(a.rating, b.rating)
             && numEquals(a.votes, b.votes)
             && Objects.equals(a.runtime, b.runtime)
@@ -292,7 +297,7 @@ public class TmdbActorDatabaseService implements AutoCloseable {
 
     private void executeUpdate(Row existing, Row t, String releaseDate) throws SQLException {
         String sql = "UPDATE " + TABLE + " SET release_date = ?, language = ?, genre = ?, director = ?, " +
-            "music_director = ?, rating = ?, votes = ?, runtime = ?, role_position = ?, character_name = ?, " +
+            "music_director = ?, music_composers = ?, rating = ?, votes = ?, runtime = ?, role_position = ?, character_name = ?, " +
             "status = ?, tmdb_person_id = ?, tmdb_movie_id = ?, gender = ?, birthday = ? " +
             "WHERE actor_name = ? AND movie_name = ? AND release_date = ?";
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
@@ -308,8 +313,8 @@ public class TmdbActorDatabaseService implements AutoCloseable {
     /** Returns false when a row with this (actor_name, movie_name, release_date) already exists but didn't match (language disagrees). */
     private boolean insert(Row t) throws SQLException {
         String sql = "INSERT INTO " + TABLE + " (actor_name, movie_name, release_date, language, genre, director, " +
-            "music_director, rating, votes, runtime, role_position, character_name, status, tmdb_person_id, " +
-            "tmdb_movie_id, gender, birthday) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+            "music_director, music_composers, rating, votes, runtime, role_position, character_name, status, " +
+            "tmdb_person_id, tmdb_movie_id, gender, birthday) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
             "ON CONFLICT DO NOTHING";
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, t.actorName);
@@ -325,6 +330,7 @@ public class TmdbActorDatabaseService implements AutoCloseable {
         ps.setString(i++, t.genre);
         ps.setString(i++, t.director);
         ps.setString(i++, t.musicDirector);
+        ps.setString(i++, t.musicComposers);
         ps.setBigDecimal(i++, t.rating);
         ps.setBigDecimal(i++, t.votes);
         ps.setString(i++, t.runtime);

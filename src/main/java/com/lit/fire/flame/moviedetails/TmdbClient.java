@@ -324,12 +324,106 @@ public class TmdbClient {
         JsonNode crew = root.path("credits").path("crew");
         return new TmdbMovieCredits(tmdbId, title, textOrNull(root.path("original_title")), releaseDate,
             language, joinNames(root.path("genres")), rating, votes, runtime, textOrNull(root.path("status")),
-            directorsFrom(crew), musicDirectorsFrom(crew), leads);
+            directorsFrom(crew), musicDirectorsFrom(crew), musicComposersFrom(crew), leads);
+    }
+
+    /**
+     * TMDB movie id for IMDb id {@code imdbId} ("tt1234567") via TMDB's /find endpoint — an exact
+     * id lookup, no title matching. Returns null when TMDB has no movie (or several) with that id.
+     */
+    public Integer findMovieIdByImdbId(String imdbId) throws Exception {
+        JsonNode results = get(API_BASE + "/find/" + urlEncode(imdbId) + "?external_source=imdb_id").path("movie_results");
+        return results.size() == 1 && results.get(0).hasNonNull("id") ? results.get(0).path("id").asInt() : null;
     }
 
     /** TMDB person {@code personId}'s birthday (YYYY-MM-DD), or null when TMDB doesn't have it. */
     public String fetchBirthday(int personId) throws Exception {
         return textOrNull(get(API_BASE + "/person/" + personId).path("birthday"));
+    }
+
+    /** One person credited on a movie, with their TMDB person id. */
+    public record CreditedPerson(int personId, String name) {}
+
+    /** A movie's full cast in billing order, its directors, and everyone credited under a music-director job. */
+    public record MoviePeople(List<CreditedPerson> cast, List<CreditedPerson> directors, List<CreditedPerson> composers) {}
+
+    /** {@code tmdbId}'s people with their person ids (see MoviePeople). */
+    public MoviePeople fetchMoviePeople(int tmdbId) throws Exception {
+        JsonNode credits = get(API_BASE + "/movie/" + tmdbId + "/credits");
+        List<JsonNode> castNodes = new ArrayList<>();
+        credits.path("cast").forEach(castNodes::add);
+        castNodes.sort(java.util.Comparator.comparingInt(c -> c.path("order").asInt(Integer.MAX_VALUE)));
+        List<CreditedPerson> cast = new ArrayList<>(), directors = new ArrayList<>(), composers = new ArrayList<>();
+        for (JsonNode c : castNodes) {
+            String name = textOrNull(c.path("name"));
+            if (name != null && c.hasNonNull("id")) cast.add(new CreditedPerson(c.path("id").asInt(), name));
+        }
+        for (JsonNode c : credits.path("crew")) {
+            String name = textOrNull(c.path("name")), job = textOrNull(c.path("job"));
+            if (name == null || !c.hasNonNull("id")) continue;
+            if ("Director".equals(job)) directors.add(new CreditedPerson(c.path("id").asInt(), name));
+            if (MUSIC_DIRECTOR_JOBS.contains(job)) composers.add(new CreditedPerson(c.path("id").asInt(), name));
+        }
+        return new MoviePeople(cast, directors, composers);
+    }
+
+    /**
+     * One film in a person's TMDB filmography.
+     *
+     * @param order     0-based billing order for an acting credit, null for a crew credit
+     * @param character the role played (acting credits), or null
+     * @param job       the crew job (crew credits), or null
+     */
+    public record FilmographyCredit(int movieId, String releaseDate, Integer order, String character, String job) {}
+
+    /** A person's details plus every movie credit TMDB has for them (see FilmographyCredit). */
+    public record PersonFilmography(int personId, String name, String gender, String birthday,
+                                    List<FilmographyCredit> cast, List<FilmographyCredit> crew) {}
+
+    /** {@code personId}'s details and full movie filmography, in one call. Returns null for an unknown person. */
+    public PersonFilmography fetchPersonFilmography(int personId) throws Exception {
+        JsonNode root = get(API_BASE + "/person/" + personId + "?append_to_response=movie_credits");
+        String name = textOrNull(root.path("name"));
+        if (name == null) return null;
+        List<FilmographyCredit> cast = new ArrayList<>(), crew = new ArrayList<>();
+        for (JsonNode c : root.path("movie_credits").path("cast")) {
+            if (!c.hasNonNull("id")) continue;
+            cast.add(new FilmographyCredit(c.path("id").asInt(), textOrNull(c.path("release_date")),
+                c.hasNonNull("order") ? c.path("order").asInt() : null, textOrNull(c.path("character")), null));
+        }
+        for (JsonNode c : root.path("movie_credits").path("crew")) {
+            if (!c.hasNonNull("id")) continue;
+            crew.add(new FilmographyCredit(c.path("id").asInt(), textOrNull(c.path("release_date")),
+                null, null, textOrNull(c.path("job"))));
+        }
+        return new PersonFilmography(personId, name, genderName(root.path("gender").asInt(0)),
+            textOrNull(root.path("birthday")), cast, crew);
+    }
+
+    /** {@code tmdbId}'s music composers (see musicComposersFrom), or null when it has none. */
+    public String fetchMusicComposers(int tmdbId) throws Exception {
+        return musicComposersFrom(get(API_BASE + "/movie/" + tmdbId + "/credits").path("crew"));
+    }
+
+    /**
+     * Everyone credited under any music-director job, most specific job first, each name once —
+     * unlike musicDirectorsFrom's single name, so both members of a duo credited separately
+     * (Laxmikant / Pyarelal) are kept. Comma-separated, or null.
+     */
+    private static String musicComposersFrom(JsonNode crewArray) {
+        Set<String> names = new java.util.LinkedHashSet<>();
+        for (String job : MUSIC_DIRECTOR_JOBS) {
+            for (JsonNode member : crewArray) {
+                String name = textOrNull(member.path("name"));
+                if (name != null && job.equals(textOrNull(member.path("job")))) names.add(name.replace(",", ""));
+            }
+        }
+        return names.isEmpty() ? null : String.join(", ", names);
+    }
+
+    /** Whether {@code job} is one of the crew jobs TMDB uses for a film's music director. */
+    public static boolean isMusicDirectorJob(String job) {
+        return MUSIC_DIRECTOR_JOBS.contains(job);
     }
 
     private static String genderName(int tmdbGender) {

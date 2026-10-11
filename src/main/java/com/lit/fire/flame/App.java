@@ -179,6 +179,26 @@ public class App {
             // Wikipedia's yearly per-language film lists, never overwriting a director already on
             // file. Safe to re-run.
             new DirectorFillService().runOnce();
+        } else if ("--india-cast-crew-fill-once".equals(args[0])) {
+            // One-shot: fill india_movies_data_collection's lead_actor_1..5, director and
+            // music_director from TMDB (by IMDb id), then actors_data_collection, then Wikidata.
+            // Only never-checked rows unless "all" is passed.
+            new com.lit.fire.flame.indiamovies.IndiaCastCrewFillService().runOnce(
+                args.length > 1 && "all".equalsIgnoreCase(args[1]));
+        } else if ("--filmography-tmdb-import-once".equals(args[0])) {
+            // One-shot: import the full TMDB filmographies of every lead actor, director and music
+            // director named in india_movies_data_collection into actors_data_collection, so the
+            // *_movie_count columns see films beyond the top-billed India-origin imports. Re-runnable.
+            new com.lit.fire.flame.actor.TmdbFilmographyImportService().runOnce();
+        } else if ("--music-composers-fill-once".equals(args[0])) {
+            // One-shot: fill actors_data_collection.music_composers (every name TMDB credits under
+            // a music job) for TMDB-tagged films. Resumable.
+            new com.lit.fire.flame.actor.MusicComposersFillService().runOnce();
+        } else if ("--india-movie-count-fill-once".equals(args[0])) {
+            // One-shot: recompute india_movies_data_collection's lead_actor_1..5_movie_count,
+            // director_movie_count and music_director_movie_count (films released before this
+            // movie's release date) from actors_data_collection and the India table itself.
+            new com.lit.fire.flame.indiamovies.IndiaMovieCountFillService().runOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -309,5 +329,9 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --india-movies-copy-once                # copy Indian-language movies_data_collection rows (budget+revenue non-zero, movie_name not already present) into india_movies_data_collection, then exit");
         System.err.println("  java -jar AuraDataFiller.jar --actor-tmdb-import-once [from] [to]    # fill actors_data_collection with lead cast + director/music director of India-origin TMDB movies 2006-today (or [from]-[to] years; resumable), then exit");
         System.err.println("  java -jar AuraDataFiller.jar --director-fill-once                     # fill empty directors in india_movies_data_collection (IMDb id) and actors_data_collection (TMDB id) from Wikidata, then Wikipedia film lists, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --india-cast-crew-fill-once [all]       # fill lead_actor_1..5/director/music_director in india_movies_data_collection from TMDB (IMDb id), actors_data_collection, then Wikidata; new rows only unless 'all', then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --filmography-tmdb-import-once           # import full TMDB filmographies of india_movies_data_collection's leads/directors/music directors into actors_data_collection, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --music-composers-fill-once             # fill actors_data_collection.music_composers (all TMDB music credits) for TMDB-tagged films, resumable, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --india-movie-count-fill-once            # recompute lead_actor_1..5/director/music_director _movie_count (films released before each movie) in india_movies_data_collection, then exit");
     }
 }

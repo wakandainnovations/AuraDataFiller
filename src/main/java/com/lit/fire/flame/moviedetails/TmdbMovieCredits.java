@@ -10,11 +10,12 @@ import java.util.List;
  * @param language    original_language expanded to a name ("Hindi"), or null when TMDB has none
  * @param directors      comma-separated, or null
  * @param musicDirectors one name (or the team "Shankar Ehsan Loy"), or null
+ * @param musicComposers  every name credited under a music-director job, comma-separated, or null
  */
 public record TmdbMovieCredits(int movieId, String title, String originalTitle, String releaseDate,
                                String language, String genre, Double rating, Integer votes,
                                Integer runtimeMinutes, String status, String directors,
-                               String musicDirectors, List<Lead> leads) {
+                               String musicDirectors, String musicComposers, List<Lead> leads) {
 
     /**
      * One top-billed cast member.
