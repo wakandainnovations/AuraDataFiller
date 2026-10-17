@@ -37,6 +37,9 @@ import java.util.concurrent.Future;
  *   <li>Wikidata, by exact IMDb id (see WikidataCastCrewClient), only when its item's release
  *       year is within a year of ours.</li>
  * </ol>
+ * The music director found is then checked against the English Wikipedia infobox (see
+ * WikipediaMusicClient), same year check: when it isn't among the film's songs composers there
+ * (TMDB often lists a background-score composer first), the first songs composer replaces it.
  * The leads come as a set from the first source that has any (sources are never mixed, since
  * each orders its cast differently); director and music_director are taken field by field from
  * the first source that has them. Each processed row is stamped with cast_crew_last_checked;
@@ -56,6 +59,8 @@ public class IndiaCastCrewFillService {
     static final class Found {
         Integer tmdbId;
         List<String> leads = List.of();
+        /** Every TMDB music-director credit, for spelling Wikipedia's names the way TMDB does. */
+        List<String> tmdbComposers = List.of();
         String director, musicDirector;
         String leadsSource, directorSource, musicSource;
 
@@ -110,6 +115,10 @@ public class IndiaCastCrewFillService {
                             if (m != null) {
                                 Found f = found.get(e.getKey());
                                 f.tmdbId = m.movieId();
+                                if (m.musicComposers() != null) {
+                                    f.tmdbComposers = java.util.Arrays.stream(m.musicComposers().split(","))
+                                        .map(String::trim).filter(IndiaCastCrewFillService::notBlank).toList();
+                                }
                                 f.offer("tmdb", m.leads().stream().map(TmdbMovieCredits.Lead::name).toList(),
                                     m.directors(), m.musicDirectors());
                             }
@@ -164,6 +173,37 @@ public class IndiaCastCrewFillService {
                 }
             }
 
+            // 4. Wikipedia check of the music director
+            List<String> withImdbId = films.keySet().stream().filter(id -> id.startsWith("tt")).toList();
+            if (!withImdbId.isEmpty()) {
+                try {
+                    Map<String, WikipediaMusicClient.Music> wiki = new WikipediaMusicClient().musicByImdbId(withImdbId);
+                    Map<String, String> spellings = knownMusicSpellings(conn);
+                    int kept = 0, changed = 0, wrongYear = 0;
+                    for (Map.Entry<String, WikipediaMusicClient.Music> e : wiki.entrySet()) {
+                        WikipediaMusicClient.Music music = e.getValue();
+                        String year = films.get(e.getKey()).year();
+                        if (music.year() == null || year.isEmpty() || Math.abs(music.year() - Integer.parseInt(year)) > 1) {
+                            wrongYear++;
+                            continue;
+                        }
+                        Found f = found.get(e.getKey());
+                        String chosen = WikipediaMusicClient.chooseMusicDirector(f.musicDirector, music, f.tmdbComposers, spellings);
+                        if (chosen != null && !chosen.equals(f.musicDirector)) {
+                            f.musicDirector = chosen;
+                            f.musicSource = "wikipedia";
+                            changed++;
+                        } else {
+                            kept++;
+                        }
+                    }
+                    log(String.format("Wikipedia: %,d of %,d movie(s) have infobox music, %,d music director(s) confirmed, %,d set, %,d skipped (year mismatch or no year).",
+                        wiki.size(), withImdbId.size(), kept, changed, wrongYear));
+                } catch (Exception e) {
+                    logErr("Wikipedia music check failed (music directors left as found): " + e.getMessage());
+                }
+            }
+
             int rows = save(conn, found);
             log(String.format("=== Done — %,d row(s) updated. Leads: %s; director: %s; music director: %s ===", rows,
                 countBySource(found, f -> f.leadsSource), countBySource(found, f -> f.directorSource),
@@ -208,6 +248,20 @@ public class IndiaCastCrewFillService {
         boolean hadLeads = !f.leads.isEmpty(), hadDirector = f.director != null, hadMusic = f.musicDirector != null;
         f.offer("actors", new ArrayList<>(leads), director, music);
         return hadLeads != !f.leads.isEmpty() || hadDirector != (f.director != null) || hadMusic != (f.musicDirector != null);
+    }
+
+    /** Normalised name -> the most used capitalised spelling among the music credits already stored. */
+    private static Map<String, String> knownMusicSpellings(Connection conn) throws SQLException {
+        String sql = "SELECT name, count(*) FROM (" +
+            " SELECT trim(music_director) AS name FROM " + ACTORS_TABLE +
+            " UNION ALL SELECT trim(c) FROM " + ACTORS_TABLE + ", unnest(string_to_array(music_composers, ',')) c" +
+            " UNION ALL SELECT trim(music_director) FROM " + TABLE + ") x" +
+            " WHERE name ~ '^[[:upper:]]' GROUP BY name ORDER BY count(*) DESC";
+        Map<String, String> spellings = new java.util.HashMap<>();
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) spellings.putIfAbsent(WikipediaMusicClient.normalize(rs.getString(1)), rs.getString(1));
+        }
+        return spellings;
     }
 
     private interface Binder { void bind(PreparedStatement ps) throws SQLException; }
