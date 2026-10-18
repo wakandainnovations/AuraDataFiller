@@ -204,7 +204,7 @@ public class WikipediaMusicClient {
     }
 
     /** Ratcliff/Obershelp ratio, as Python's difflib.SequenceMatcher computes it. */
-    private static double similarity(String a, String b) {
+    static double similarity(String a, String b) {
         return 2.0 * matchingChars(a, b) / (a.length() + b.length());
     }
 

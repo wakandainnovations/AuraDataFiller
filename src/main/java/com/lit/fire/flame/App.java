@@ -199,6 +199,11 @@ public class App {
             // director_movie_count and music_director_movie_count (films released before this
             // movie's release date) from actors_data_collection and the India table itself.
             new com.lit.fire.flame.indiamovies.IndiaMovieCountFillService().runOnce();
+        } else if ("--india-screens-fill-once".equals(args[0])) {
+            // One-shot: fill empty india_movies_data_collection.number_of_screens from Box Office
+            // India (Hindi films; page crawl is resumable) and then English Wikipedia (any language),
+            // recording each value's source and scope in india_screens_source. Safe to re-run.
+            new com.lit.fire.flame.indiamovies.IndiaScreensFillService().runOnce();
         } else if ("--actor-filmography".equals(args[0])) {
             if (args.length < 2) {
                 System.err.println("--actor-filmography requires an actor name.");
@@ -333,5 +338,6 @@ public class App {
         System.err.println("  java -jar AuraDataFiller.jar --filmography-tmdb-import-once           # import full TMDB filmographies of india_movies_data_collection's leads/directors/music directors into actors_data_collection, then exit");
         System.err.println("  java -jar AuraDataFiller.jar --music-composers-fill-once             # fill actors_data_collection.music_composers (all TMDB music credits) for TMDB-tagged films, resumable, then exit");
         System.err.println("  java -jar AuraDataFiller.jar --india-movie-count-fill-once            # recompute lead_actor_1..5/director/music_director _movie_count (films released before each movie) in india_movies_data_collection, then exit");
+        System.err.println("  java -jar AuraDataFiller.jar --india-screens-fill-once               # fill empty number_of_screens in india_movies_data_collection from Box Office India (Hindi), then Wikipedia; sources in india_screens_source, then exit");
     }
 }
