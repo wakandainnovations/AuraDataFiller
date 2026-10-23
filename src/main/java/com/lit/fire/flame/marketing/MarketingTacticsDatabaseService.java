@@ -14,7 +14,7 @@ import java.util.Map;
 /**
  * Database operations for the marketing-tactics enrichment service.
  *
- * Owns two tables:
+ * Owns three tables (plus the language_full_name() SQL function, see {@link #ensureSchema}):
  *   - movie_marketing_tactics: one row per (movie, sub-classification) actually used, with the
  *     tactic detail strings AuraLLM returned for it. This is the table future callers query for
  *     retrieval (movie_name, release_year, language, sub_classification_number is the PK, so a
@@ -25,11 +25,21 @@ import java.util.Map;
  *     runtime_budget_last_checked elsewhere in this app, just as its own table since the data shape
  *     here is one-row-per-movie rather than a column bolted onto movies_data_collection, which
  *     wouldn't work anyway since candidates are also sourced from managed_entities).
+ *   - movie_marketing_tactics_validated: (movie_name, release_year) units hand-validated against
+ *     web sources; excluded from scanning so a recheck can't overwrite them.
  */
 public class MarketingTacticsDatabaseService implements AutoCloseable {
 
     public static final String TACTICS_TABLE      = "movie_marketing_tactics";
     public static final String SCAN_STATUS_TABLE   = "movie_marketing_tactics_scan_status";
+    /**
+     * Units (movie_name, release_year — every language) hand-validated against web sources per
+     * MARKETING_TACTICS_VALIDATION.md. The scan never picks these up again: a recheck would
+     * replaceTactics() them back to raw LLM output, or re-fill a unit validated as having none.
+     */
+    public static final String VALIDATED_TABLE     = "movie_marketing_tactics_validated";
+    /** Shared SQL function mapping a language value to the stored full name (see LanguageNames). */
+    public static final String LANGUAGE_FUNCTION   = "language_full_name";
 
     /**
      * Indian-language filter, matching the same list used elsewhere in the app
@@ -51,7 +61,11 @@ public class MarketingTacticsDatabaseService implements AutoCloseable {
         this.connection.setAutoCommit(false);
     }
 
-    /** Creates both tables if they don't already exist. Safe to call on every startup. */
+    /**
+     * Creates the tables if they don't already exist and (re)creates the language_full_name()
+     * SQL function from {@link LanguageNames}, which AuraService and AuraMath call when joining
+     * this table to movies_data_collection. Safe to call on every startup.
+     */
     public void ensureSchema() throws SQLException {
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(
@@ -76,6 +90,16 @@ public class MarketingTacticsDatabaseService implements AutoCloseable {
                 "  \"tactics_found_count\" INT NOT NULL DEFAULT 0, " +
                 "  PRIMARY KEY (\"movie_name\", \"release_year\", \"language\")" +
                 ")");
+            stmt.execute(
+                "CREATE TABLE IF NOT EXISTS " + q(VALIDATED_TABLE) + " (" +
+                "  \"movie_name\"   TEXT NOT NULL, " +
+                "  \"release_year\" TEXT NOT NULL, " +
+                "  \"validated_at\" TIMESTAMP NOT NULL DEFAULT now(), " +
+                "  PRIMARY KEY (\"movie_name\", \"release_year\")" +
+                ")");
+            stmt.execute(
+                "CREATE OR REPLACE FUNCTION " + LANGUAGE_FUNCTION + "(text) RETURNS text " +
+                "LANGUAGE sql IMMUTABLE AS $fn$ SELECT " + LanguageNames.sqlNormalize("$1") + " $fn$");
         }
         connection.commit();
     }
@@ -100,14 +124,19 @@ public class MarketingTacticsDatabaseService implements AutoCloseable {
      * as elsewhere in this app) and, when present, managed_entities (type='MOVIE', release_date
      * DATE) — both restricted to already-released movies with release year in
      * [currentYear - lookbackYears, currentYear], most-recently-released first. A candidate is
-     * skipped when it was already scanned within the last {@code recheckDays} days.
+     * skipped when it was already scanned within the last {@code recheckDays} days, or when its
+     * (movie_name, year) is in the validated table at all.
      */
     public List<Candidate> getCandidates(String moviesTable, boolean includeManagedEntities,
                                           int lookbackYears, int recheckDays, int limit) throws SQLException {
+        // Source tables mix ISO codes ("lv"), full names and capitalised names ("Tamil");
+        // normalise to the full lowercase name stored in movie_marketing_tactics so the
+        // scan-status join and the rows written for each candidate use one spelling.
+        String langExpr = LanguageNames.sqlNormalize("\"language\"");
         StringBuilder sql = new StringBuilder();
         sql.append("WITH candidates AS (")
            .append("  SELECT \"movie_name\" AS movie_name, LEFT(\"release_date\", 4) AS yr, ")
-           .append("         COALESCE(NULLIF(\"language\", ''), 'Unknown') AS language, \"country\" AS country ")
+           .append("         ").append(langExpr).append(" AS language, \"country\" AS country ")
            .append("  FROM ").append(q(moviesTable)).append(' ')
            .append("  WHERE \"release_date\" IS NOT NULL AND LEFT(\"release_date\", 4) ~ '^[0-9]{4}$' ")
            .append("    AND LEFT(\"release_date\", 4)::int BETWEEN ? AND EXTRACT(YEAR FROM CURRENT_DATE)::int ")
@@ -115,7 +144,7 @@ public class MarketingTacticsDatabaseService implements AutoCloseable {
         if (includeManagedEntities) {
             sql.append("  UNION ")
                .append("  SELECT \"name\" AS movie_name, TO_CHAR(\"release_date\", 'YYYY') AS yr, ")
-               .append("         COALESCE(NULLIF(\"language\", ''), 'Unknown') AS language, NULL::text AS country ")
+               .append("         ").append(langExpr).append(" AS language, NULL::text AS country ")
                .append("  FROM managed_entities ")
                .append("  WHERE \"type\" = 'MOVIE' AND \"release_date\" IS NOT NULL AND \"release_date\" <= CURRENT_DATE ")
                .append("    AND EXTRACT(YEAR FROM \"release_date\")::int BETWEEN ? AND EXTRACT(YEAR FROM CURRENT_DATE)::int ");
@@ -129,7 +158,9 @@ public class MarketingTacticsDatabaseService implements AutoCloseable {
            .append("SELECT c.movie_name, c.yr, c.language FROM candidates c ")
            .append("LEFT JOIN ").append(q(SCAN_STATUS_TABLE)).append(" s ")
            .append("  ON s.\"movie_name\" = c.movie_name AND s.\"release_year\" = c.yr AND s.\"language\" = c.language ")
-           .append("WHERE s.\"movie_name\" IS NULL OR s.\"last_scanned_at\" < CURRENT_DATE - ?::int ")
+           .append("WHERE (s.\"movie_name\" IS NULL OR s.\"last_scanned_at\" < CURRENT_DATE - ?::int) ")
+           .append("  AND NOT EXISTS (SELECT 1 FROM ").append(q(VALIDATED_TABLE)).append(" v ")
+           .append("    WHERE v.\"movie_name\" = c.movie_name AND v.\"release_year\" = c.yr) ")
            .append("ORDER BY ")
            .append("  CASE ")
            .append("    WHEN LOWER(c.language) IN ").append(INDIAN_LANGUAGES_SQL).append(" THEN 0 ")
@@ -257,7 +288,7 @@ public class MarketingTacticsDatabaseService implements AutoCloseable {
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, movieName);
             ps.setString(2, releaseYear);
-            ps.setString(3, language);
+            ps.setString(3, LanguageNames.normalize(language));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Array arr = rs.getArray("tactic_details");
