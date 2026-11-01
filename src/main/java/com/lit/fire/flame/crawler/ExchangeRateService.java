@@ -36,10 +36,17 @@ public class ExchangeRateService {
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
     // Matches the USD entry inside the historicRates array embedded in __NEXT_DATA__:
-    // {"currency":"USD","rate":0.01311382...}
+    // {"currency":"USD","rate":0.01311382...}. Only applied to that array's text —
+    // the page also has a cbrData array whose USD entry is an interest rate.
     private static final Pattern USD_RATE = Pattern.compile(
         "\"currency\"\\s*:\\s*\"USD\"\\s*,\\s*\"rate\"\\s*:\\s*([0-9.]+)"
     );
+    private static final String HISTORIC_RATES_START = "\"historicRates\":[";
+
+    // INR->USD has stayed within ~0.010-0.035 since 1990; anything outside this band
+    // is a parsing error, not a real rate.
+    static final double RATE_SANE_MIN = 0.005;
+    static final double RATE_SANE_MAX = 0.05;
 
     private final HttpClient          httpClient;
     private final Map<String, Double> cache         = new HashMap<>();
@@ -130,14 +137,43 @@ public class ExchangeRateService {
                 "xe.com returned HTTP " + response.statusCode() + " for date " + date);
         }
 
-        Matcher m = USD_RATE.matcher(response.body());
-        if (!m.find()) {
-            throw new IOException(
-                "Could not find USD rate in xe.com response for date " + date +
-                " (body length=" + response.body().length() + ")");
-        }
+        return parseUsdRate(response.body(), date);
+    }
 
-        return Double.parseDouble(m.group(1));
+    /**
+     * Extracts the INR→USD rate from an xe.com currency-tables page.
+     *
+     * The rate must come from the {@code historicRates} array. When xe.com has no data
+     * for a date it returns {@code "isError":true} with {@code "historicRates":null}, and
+     * the page's only USD entry is in {@code cbrData} (central-bank interest rates, e.g.
+     * 3.75 = 3.75%). Matching anywhere in the page stored those as exchange rates, so an
+     * error page, a missing array, or a rate outside {@link #RATE_SANE_MIN}..{@link
+     * #RATE_SANE_MAX} is rejected instead.
+     */
+    static double parseUsdRate(String body, String date) throws IOException {
+        if (body.contains("\"isError\":true")) {
+            throw new IOException("xe.com has no rates for date " + date + " (isError=true)");
+        }
+        int start = body.indexOf(HISTORIC_RATES_START);
+        if (start < 0) {
+            throw new IOException(
+                "No historicRates array in xe.com response for date " + date +
+                " (body length=" + body.length() + ")");
+        }
+        // The array holds flat objects only, so the first ']' closes it.
+        int end = body.indexOf(']', start);
+        if (end < 0) end = body.length();
+
+        Matcher m = USD_RATE.matcher(body.substring(start, end));
+        if (!m.find()) {
+            throw new IOException("No USD entry in xe.com historicRates for date " + date);
+        }
+        double rate = Double.parseDouble(m.group(1));
+        if (rate < RATE_SANE_MIN || rate > RATE_SANE_MAX) {
+            throw new IOException(
+                "Implausible INR->USD rate " + rate + " from xe.com for date " + date);
+        }
+        return rate;
     }
 
     private String resolveQueryDate(String releaseDate) {
